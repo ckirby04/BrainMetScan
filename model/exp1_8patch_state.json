@@ -1,0 +1,37 @@
+{
+  "experiment": "exp1_8patch",
+  "patch_size": 8,
+  "epochs": 200,
+  "elapsed_minutes": 6.890974752108256,
+  "best_metrics": {
+    "dice": 0.8276754021644592,
+    "sensitivity": 0.8858131766319275,
+    "specificity": 0.8495625853538513,
+    "precision": 0.7766990065574646,
+    "tiny_dice": 0.8581145462967328,
+    "small_dice": 0.0,
+    "medium_dice": 0.0,
+    "large_dice": 0.0,
+    "lesion_sensitivity": 0.969696940312214,
+    "lesion_precision": 0.9687499697265636,
+    "lesion_f1": 0.9692227237126084,
+    "n_true_lesions": 33,
+    "n_detected": 32
+  },
+  "final_metrics": {
+    "dice": 0.8347383141517639,
+    "sensitivity": 0.884013831615448,
+    "specificity": 0.86174476146698,
+    "precision": 0.7906659841537476,
+    "tiny_dice": 0.8445724793256004,
+    "small_dice": 0.0,
+    "medium_dice": 0.0,
+    "large_dice": 0.0,
+    "lesion_sensitivity": 0.9090908815427007,
+    "lesion_precision": 0.937499970703126,
+    "lesion_f1": 0.923076394793171,
+    "n_true_lesions": 33,
+    "n_detected": 30
+  },
+  "timestamp": "2026-01-29T23:38:34.631757"
+}

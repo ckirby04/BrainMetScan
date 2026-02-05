@@ -1,0 +1,92 @@
+# Configuration for Tiny Lesion Detection - Ultra Small Patches
+# Strategy: 24^3 patches on 256^3 images for maximum tiny lesion resolution
+
+# Data
+data_dir: "../Superset/full/train"
+test_dir: "../Superset/full/test"
+output_dir: "model"
+model_name: "tiny_lesion_24patch"
+
+# Model architecture - optimized for very small patches
+model_type: "lightweight"
+base_channels: 32  # More channels to compensate for less spatial context
+depth: 3
+dropout: 0.15
+use_attention: true  # Critical for focusing on small structures
+use_residual: true
+
+# Training - 24x24x24 patches on 128^3 volumes
+patch_size: [24, 24, 24]
+target_size: [128, 128, 128]  # 128^3 fits in RAM reliably
+batch_size: 16  # Can use larger batch with tiny patches
+epochs: 150  # More epochs for convergence
+lr: 0.001
+
+# Loss function - Maximum focus on tiny lesions
+loss_type: "small_lesion"
+small_lesion_threshold: 500
+small_lesion_weight: 25.0  # Very aggressive
+
+# Tversky parameters - extreme recall focus
+tversky_alpha: 0.15  # Very low = accept more false positives
+tversky_beta: 0.85   # Very high = heavily penalize missing lesions
+focal_alpha: 0.85
+focal_gamma: 4.0  # Higher gamma = more focus on hard examples
+
+# Sampling strategy
+sampling_strategy: "difficulty"
+difficulty_multiplier: 20.0
+oversample_small_lesions: true
+foreground_ratio: 0.98  # Almost always sample from lesion regions
+
+# Learning rate schedule
+scheduler: "cosine"
+warmup_epochs: 10
+
+# Augmentation - minimal to preserve tiny structures
+use_augmentation: true
+augmentation_prob: 0.3  # Lower probability
+rotation_range: 5  # Very small rotation
+scale_range: [0.98, 1.02]  # Minimal scaling
+elastic_deformation: false  # Disabled
+
+# Regularization
+gradient_clip: 1.0
+weight_decay: 0.0001
+early_stopping: true
+patience: 30  # More patience for convergence
+
+# Validation
+val_split: 0.15
+num_workers: 4  # 128^3 volumes allow more workers
+save_freq: 10
+
+# Inference settings
+eval_patch_size: [24, 24, 24]
+eval_overlap: 0.85  # Very high overlap for tiny patches
+eval_threshold: 0.25  # Lower threshold to catch more tiny lesions
+
+# RATIONALE:
+# 1. Patch size 24^3:
+#    - A 500-voxel lesion (~8^3) occupies 8/24 = 33% of one dimension
+#    - Compare to 48^3 where it's only 17%
+#    - Tiny lesions become much more prominent in the patch
+#
+# 2. Target size 128^3:
+#    - Standard resolution that fits reliably in 32GB RAM
+#    - 256^3 causes OOM with multiple DataLoader workers
+#    - Small patch size (24^3) compensates for lower resolution
+#
+# 3. Batch size 16:
+#    - 24^3 = 13,824 voxels per patch
+#    - 48^3 = 110,592 voxels per patch (8x more)
+#    - Can fit many more small patches in memory
+#
+# 4. 85% inference overlap:
+#    - Small patches need high overlap for complete coverage
+#    - Ensures every voxel is seen by multiple predictions
+#    - Averaging improves accuracy
+#
+# 5. More base channels (32):
+#    - Compensates for reduced spatial context
+#    - More capacity to learn discriminative features

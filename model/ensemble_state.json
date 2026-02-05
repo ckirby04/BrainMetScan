@@ -1,0 +1,46 @@
+{
+  "epoch": 100,
+  "epochs_total": 100,
+  "train_loss": 0.10127061224691776,
+  "val_loss": 0.10244795784819871,
+  "metrics": {
+    "dice": 0.8793296813964844,
+    "sensitivity": 0.9122418761253357,
+    "specificity": 0.990415096282959,
+    "precision": 0.8487095832824707,
+    "voxel_f1": 0.879329158947902,
+    "lesion_sensitivity": 0.6805194787518974,
+    "lesion_precision": 0.8624999973046875,
+    "lesion_f1": 0.7607780424137089,
+    "n_true_lesions": 385,
+    "n_pred_lesions": 320,
+    "n_detected": 262,
+    "tiny_dice": 0.7315572552065364,
+    "small_dice": 0.8187104221433401,
+    "medium_dice": 0.861686090628306,
+    "large_dice": 0.8929270286949313
+  },
+  "best_metrics": {
+    "dice": 0.880804181098938,
+    "sensitivity": 0.9030032157897949,
+    "specificity": 0.9913117289543152,
+    "precision": 0.8596704006195068,
+    "voxel_f1": 0.8808036707989432,
+    "lesion_sensitivity": 0.6649350632079609,
+    "lesion_precision": 0.8980891691143658,
+    "lesion_f1": 0.7641219937878745,
+    "n_true_lesions": 385,
+    "n_pred_lesions": 314,
+    "n_detected": 256,
+    "tiny_dice": 0.7219040109413137,
+    "small_dice": 0.8189372904598713,
+    "medium_dice": 0.8609018683433532,
+    "large_dice": 0.8938866719907644
+  },
+  "patch_sizes": [
+    12,
+    24,
+    36
+  ],
+  "timestamp": "2026-01-29T15:47:30.031085"
+}

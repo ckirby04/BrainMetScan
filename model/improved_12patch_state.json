@@ -1,0 +1,18 @@
+{
+  "epoch": 250,
+  "epochs_total": 250,
+  "patch_size": 12,
+  "train_loss": 0.10901572025920216,
+  "val_loss": 0.14730405701058252,
+  "val_dice": 0.8631302714347839,
+  "tiny_dice": 0.769218467723578,
+  "small_dice": 0.8731689235297254,
+  "medium_dice": null,
+  "large_dice": null,
+  "sensitivity": 0.8852510452270508,
+  "specificity": 0.9350082874298096,
+  "best_val_loss": 0.14346493567739213,
+  "best_val_dice": 0.8659385442733765,
+  "best_tiny_dice": 0.7797472826231456,
+  "timestamp": "2026-01-29T00:55:28.307611"
+}

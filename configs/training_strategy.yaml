@@ -1,0 +1,311 @@
+# =============================================================================
+# SUPERSET TRAINING STRATEGY CONFIGURATION
+# =============================================================================
+# This configuration defines a multi-phase training approach using:
+# 1. Self-supervised pretraining on Yale unlabeled data
+# 2. Curriculum learning from high-quality to full dataset
+# 3. Final fine-tuning with hard sample mining
+#
+# The strategies can be run in PARALLEL:
+# - Strategy A: Curriculum learning (supervised only)
+# - Strategy B: Pretraining -> Fine-tuning (transfer learning)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# DATA PATHS
+# -----------------------------------------------------------------------------
+data:
+  superset_root: "../Superset"
+  full_train: "../Superset/full/train"
+  full_test: "../Superset/full/test"
+  high_quality_train: "../Superset/high_quality/train"
+  pretraining: "../Superset/pretraining"
+  metadata: "../Superset/metadata.csv"
+
+# -----------------------------------------------------------------------------
+# STRATEGY A: CURRICULUM LEARNING (Run independently)
+# -----------------------------------------------------------------------------
+# Start with high-quality images, gradually incorporate harder cases
+# No pretraining required - can start immediately
+strategy_a:
+  name: "curriculum_learning"
+  description: "Progressive training from easy to hard samples"
+
+  # Phase 1: High-quality bootstrap (builds strong feature representations)
+  phase_1:
+    name: "high_quality_bootstrap"
+    data_source: "high_quality_train"
+    epochs: 50
+    batch_size: 4
+    learning_rate: 0.001
+    scheduler: "cosine"
+    warmup_epochs: 5
+
+    # Model configuration
+    model:
+      type: "lightweight"
+      base_channels: 24  # Slightly larger for better capacity
+      depth: 3
+      attention: true
+      dropout: 0.1
+
+    # Loss focused on balanced learning
+    loss:
+      type: "combo"
+      dice_weight: 0.5
+      bce_weight: 0.3
+      tversky_weight: 0.2
+      tversky_alpha: 0.7  # Favor recall
+
+    # Light augmentation (preserve quality)
+    augmentation:
+      probability: 0.3
+      flip: true
+      rotation_range: 10
+      scale_range: [0.95, 1.05]
+      elastic: false
+
+    # Save best model for phase 2
+    checkpoint: "model/curriculum_phase1_best.pth"
+
+  # Phase 2: Full dataset with curriculum sampling
+  phase_2:
+    name: "full_dataset_curriculum"
+    data_source: "full_train"
+    epochs: 100
+    batch_size: 2
+    learning_rate: 0.0005  # Lower LR for fine-tuning
+    scheduler: "cosine"
+    warmup_epochs: 3
+
+    # Resume from phase 1
+    resume_from: "model/curriculum_phase1_best.pth"
+
+    # Curriculum sampling: start with easy, gradually add hard
+    curriculum:
+      enabled: true
+      quality_score_column: "overall_score"
+      initial_percentile: 70      # Start with top 70% quality
+      final_percentile: 0         # End with all data
+      schedule: "linear"          # Linear decrease over epochs
+      schedule_epochs: 50         # Reach full data at epoch 50
+
+    # Small lesion emphasis
+    loss:
+      type: "small_lesion"
+      small_lesion_threshold: 5000
+      small_lesion_weight: 5.0
+      dice_weight: 0.5
+      bce_weight: 0.5
+
+    # Heavier augmentation
+    augmentation:
+      probability: 0.5
+      flip: true
+      rotation_range: 15
+      scale_range: [0.9, 1.1]
+      elastic: true
+      intensity_shift: 0.1
+      gaussian_noise: 0.05
+
+    checkpoint: "model/curriculum_phase2_best.pth"
+
+  # Phase 3: Hard sample mining
+  phase_3:
+    name: "hard_sample_focus"
+    data_source: "full_train"
+    epochs: 50
+    batch_size: 2
+    learning_rate: 0.0001
+    scheduler: "cosine"
+
+    resume_from: "model/curriculum_phase2_best.pth"
+
+    # Focus on difficult cases
+    sampling:
+      strategy: "difficulty_weighted"
+      difficulty_multiplier: 10.0
+      oversample_small_lesions: true
+      min_lesion_samples: 3
+
+    # Tversky for small lesion recall
+    loss:
+      type: "tversky"
+      alpha: 0.8  # High alpha = penalize false negatives
+      beta: 0.2
+
+    checkpoint: "model/curriculum_final.pth"
+
+# -----------------------------------------------------------------------------
+# STRATEGY B: PRETRAINING -> FINE-TUNING (Run in parallel with A)
+# -----------------------------------------------------------------------------
+# Self-supervised pretraining on unlabeled Yale data, then fine-tune
+strategy_b:
+  name: "pretrain_finetune"
+  description: "Self-supervised pretraining then supervised fine-tuning"
+
+  # Phase 1: Self-supervised pretraining on Yale
+  phase_1:
+    name: "self_supervised_pretraining"
+    data_source: "pretraining"
+    epochs: 100
+    batch_size: 4
+    learning_rate: 0.001
+    scheduler: "cosine"
+    warmup_epochs: 10
+
+    # Pretraining task: reconstruction + contrastive
+    pretraining:
+      task: "masked_reconstruction"
+      mask_ratio: 0.4           # Mask 40% of patches
+      reconstruction_weight: 0.7
+      contrastive_weight: 0.3
+
+      # Also add intensity prediction
+      intensity_prediction: true
+      intensity_bins: 10
+
+    # Model (encoder only for pretraining)
+    model:
+      type: "lightweight"
+      base_channels: 24
+      depth: 3
+      attention: true
+      # Only train encoder during pretraining
+      freeze_decoder: true
+
+    # Heavy augmentation for robustness
+    augmentation:
+      probability: 0.7
+      flip: true
+      rotation_range: 20
+      scale_range: [0.85, 1.15]
+      elastic: true
+      intensity_shift: 0.15
+      gaussian_noise: 0.1
+      blur: 0.1
+
+    checkpoint: "model/pretrained_encoder.pth"
+
+  # Phase 2: Supervised fine-tuning on full labeled data
+  phase_2:
+    name: "supervised_finetuning"
+    data_source: "full_train"
+    epochs: 100
+    batch_size: 2
+    learning_rate: 0.0003  # Lower for transfer
+    scheduler: "cosine"
+    warmup_epochs: 5
+
+    # Load pretrained encoder
+    resume_from: "model/pretrained_encoder.pth"
+    load_encoder_only: true  # Initialize decoder fresh
+
+    # Gradual unfreezing
+    unfreezing:
+      enabled: true
+      freeze_encoder_epochs: 10  # Keep encoder frozen first
+      unfreeze_schedule: "gradual"  # Unfreeze layer by layer
+
+    # Combined loss
+    loss:
+      type: "small_lesion"
+      small_lesion_threshold: 5000
+      small_lesion_weight: 5.0
+
+    augmentation:
+      probability: 0.5
+      flip: true
+      rotation_range: 15
+      scale_range: [0.9, 1.1]
+      elastic: true
+
+    checkpoint: "model/pretrain_finetune_best.pth"
+
+  # Phase 3: Final refinement with hard samples
+  phase_3:
+    name: "hard_sample_refinement"
+    data_source: "full_train"
+    epochs: 50
+    batch_size: 2
+    learning_rate: 0.0001
+
+    resume_from: "model/pretrain_finetune_best.pth"
+
+    sampling:
+      strategy: "difficulty_weighted"
+      difficulty_multiplier: 10.0
+
+    loss:
+      type: "tversky"
+      alpha: 0.8
+      beta: 0.2
+
+    checkpoint: "model/pretrain_final.pth"
+
+# -----------------------------------------------------------------------------
+# ENSEMBLE STRATEGY (After both strategies complete)
+# -----------------------------------------------------------------------------
+ensemble:
+  name: "dual_strategy_ensemble"
+  description: "Combine best models from both strategies"
+
+  models:
+    - path: "model/curriculum_final.pth"
+      weight: 0.5
+    - path: "model/pretrain_final.pth"
+      weight: 0.5
+
+  # Test-time augmentation
+  tta:
+    enabled: true
+    flips: true
+    rotations: [0, 90, 180, 270]
+
+  output: "model/ensemble_best.pth"
+
+# -----------------------------------------------------------------------------
+# EVALUATION CONFIGURATION
+# -----------------------------------------------------------------------------
+evaluation:
+  metrics:
+    - dice
+    - iou
+    - sensitivity
+    - specificity
+    - hausdorff_95
+
+  size_stratified:
+    enabled: true
+    thresholds:
+      tiny: 500
+      medium: 5000
+      large: inf
+
+  cross_validation:
+    enabled: false
+    folds: 5
+
+# -----------------------------------------------------------------------------
+# HARDWARE & TRAINING SETTINGS
+# -----------------------------------------------------------------------------
+hardware:
+  mixed_precision: true
+  gradient_clipping: 1.0
+  num_workers: 4
+  pin_memory: true
+  deterministic: false  # For speed
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 20
+  min_delta: 0.001
+  monitor: "val_dice"
+
+# Logging
+logging:
+  wandb: false
+  tensorboard: true
+  log_dir: "logs"
+  save_frequency: 10
