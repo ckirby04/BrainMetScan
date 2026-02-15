@@ -69,8 +69,9 @@ chromadb/
 # Zip files
 *.zip
 
-# Training state markers
+# Training state markers and caches
 model/training_states/
+model/stacking_cache*/
 
 # Misc
 nul

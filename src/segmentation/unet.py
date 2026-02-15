@@ -207,13 +207,15 @@ class LightweightUNet3D(nn.Module):
         depth=3,
         dropout_p=0.1,
         use_attention=False,
-        use_residual=False
+        use_residual=False,
+        deep_supervision=False
     ):
         super().__init__()
 
         self.depth = depth
         self.use_attention = use_attention
         self.use_residual = use_residual
+        self.deep_supervision = deep_supervision
         channels = [base_channels * (2 ** i) for i in range(depth + 1)]
 
         # Select conv block type
@@ -239,6 +241,15 @@ class LightweightUNet3D(nn.Module):
         # Final convolution
         self.outc = nn.Conv3d(channels[0], out_channels, kernel_size=1)
 
+        # Deep supervision auxiliary heads (one per decoder level)
+        if deep_supervision:
+            # up_blocks output channels: channels[depth-1], ..., channels[0]
+            # i.e. for depth=3, base=20: [80, 40, 20]
+            self.ds_heads = nn.ModuleList([
+                nn.Conv3d(channels[depth - 1 - i], out_channels, kernel_size=1)
+                for i in range(depth)
+            ])
+
     def forward(self, x):
         # Encoder
         x1 = self.inc(x)
@@ -252,11 +263,17 @@ class LightweightUNet3D(nn.Module):
         # Decoder (skip last skip connection, it's the bottleneck)
         skip_connections = skip_connections[:-1][::-1]
 
+        aux_outputs = []
         for i, up in enumerate(self.up_blocks):
             x = up(x, skip_connections[i])
+            if self.deep_supervision:
+                aux_outputs.append(self.ds_heads[i](x))
 
         # Output
         x = self.outc(x)
+
+        if self.deep_supervision:
+            return x, aux_outputs
         return x
 
 
@@ -367,6 +384,16 @@ class EnhancedCombinedLoss(nn.Module):
         )
 
         return total_loss
+
+
+class BoundaryLoss(nn.Module):
+    """
+    Boundary loss using signed distance maps.
+    Penalizes predictions far from true boundary, rewards predictions near it.
+    """
+    def forward(self, pred, dist_map):
+        pred_prob = torch.sigmoid(pred)
+        return (pred_prob * dist_map).mean()
 
 
 def count_parameters(model):

@@ -62,7 +62,10 @@ class BrainMetDataset(Dataset):
         # Create augmentation pipeline if requested
         self.augmentation = None
         if augment:
-            from augmentation import AugmentationPipeline
+            try:
+                from segmentation.augmentation import AugmentationPipeline
+            except ImportError:
+                from augmentation import AugmentationPipeline
             self.augmentation = AugmentationPipeline(augmentation_probability=augmentation_prob)
             print(f"Augmentation enabled with probability: {augmentation_prob}")
 
