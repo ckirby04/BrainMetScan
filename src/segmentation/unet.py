@@ -180,23 +180,32 @@ class AttentionUpBlock(nn.Module):
 
 class LightweightUNet3D(nn.Module):
     """
-    Lightweight 3D U-Net for brain metastasis segmentation
+    Lightweight 3D U-Net with attention gates and residual connections.
 
-    Architecture designed for consumer GPUs:
-    - Reduced channel dimensions
-    - Only 3 levels deep
-    - Dropout for regularization
-    - Efficient memory usage
-    - Optional attention gates and residual connections
+    Designed for brain metastasis segmentation on consumer GPUs (8-16 GB VRAM).
+    Uses reduced channel dimensions and configurable depth for memory efficiency.
 
     Args:
-        in_channels: Number of input modalities (default: 4 for t1_pre, t1_gd, flair, bravo)
-        out_channels: Number of output classes (default: 1 for binary segmentation)
-        base_channels: Base number of feature channels (default: 16)
-        depth: Number of downsampling levels (default: 3)
-        dropout_p: Dropout probability (default: 0.1)
-        use_attention: Use attention gates in decoder (default: False)
-        use_residual: Use residual connections in conv blocks (default: False)
+        in_channels (int): Number of input MRI modalities (default: 4)
+        out_channels (int): Number of output classes (default: 1 for binary seg)
+        base_channels (int): Base feature channels, doubled at each level (default: 16)
+        depth (int): Number of encoder/decoder levels (default: 3)
+        dropout_p (float): Dropout probability (default: 0.1)
+        use_attention (bool): Enable attention gates in decoder path
+        use_residual (bool): Enable residual connections in encoder blocks
+        deep_supervision (bool): Return auxiliary outputs from each decoder level
+
+    Input shape:  (B, in_channels, D, H, W) — e.g. (2, 4, 128, 128, 128)
+    Output shape: (B, out_channels, D, H, W) — raw logits before sigmoid
+
+    With deep_supervision=True, returns (main_output, [aux_1, aux_2, ...])
+    where each auxiliary has shape (B, out_channels, D_i, H_i, W_i) at that level's resolution.
+
+    Example:
+        >>> model = LightweightUNet3D(in_channels=4, base_channels=20, use_attention=True, use_residual=True)
+        >>> x = torch.randn(1, 4, 128, 128, 128)
+        >>> logits = model(x)  # (1, 1, 128, 128, 128)
+        >>> probs = torch.sigmoid(logits)
     """
 
     def __init__(

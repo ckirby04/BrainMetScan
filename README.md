@@ -1,175 +1,131 @@
-# Brain Metastasis Segmentation Model v1.2
+# BrainMetScan
 
-**Smart Ensemble**: Multi-scale 3D U-Net ensemble for high-sensitivity brain metastasis detection
+> Automated brain metastasis segmentation from multi-modal MRI using a
+> multi-scale 3D U-Net ensemble trained on publicly available data.
 
-## Performance Summary
+## Clinical Motivation
 
-### Smart Ensemble (Union Fusion)
+- Brain metastases occur in 20-40% of cancer patients
+- Accurate, fast segmentation is critical for stereotactic radiosurgery planning
+- Small lesions (<10 mm) are routinely missed by radiologists under time pressure
+- This project focuses specifically on improving detection of sub-centimeter lesions
 
-| Threshold | Voxel Sensitivity | Specificity | Lesion Detection | Lesion F1 |
-|-----------|------------------|-------------|------------------|-----------|
-| 0.5 | 97.0% | 86.8% | 92.2% (47/51) | 63.1% |
-| **0.6** | **95.6%** | **90.9%** | **92.2%** (47/51) | **70.1%** |
-| 0.7 | 92.8% | 93.3% | 84.1% (43/51) | 73.5% |
+## What This Is
 
-**Recommended Clinical Threshold**: 0.6 (best balance of sensitivity and specificity)
+A hybrid segmentation pipeline combining a custom lightweight 3D U-Net ensemble
+with nnU-Net v2, trained on the [Stanford BrainMetShare](https://stanfordaimi.azurewebsites.net/datasets/) dataset (566 labeled cases).
 
-### Best Individual Model: exp3_12patch_maxfn
+| Metric | Custom Ensemble | nnU-Net v2 |
+|---|---|---|
+| Mean Voxel Dice | 0.748 | **0.760** |
+| Median Voxel Dice | 0.781 | **0.810** |
+| Voxel Sensitivity | **0.784** | 0.735 |
+| Lesion Detection F1 | **0.753** | 0.725 |
+| Lesion Recall | **0.725** | 0.654 |
+| Tiny Lesion Dice (<100 vox) | **0.833** | 0.741 |
+| Large Lesion Dice (>5k vox) | 0.844 | **0.853** |
 
-| Metric | Score |
-|--------|-------|
-| Lesion Sensitivity | 90.4% |
-| Lesion F1 | 85.4% |
-| Tiny Lesion Dice | 85-92% |
-| Optimal Threshold | 0.55 |
+**Stacking ensemble** (fusing both): **0.776 mean Dice, ~0.82 median**.
 
-### Improvement Over Baseline
+**Human inter-rater baseline**: Median Dice 0.85 (IQR 0.80-0.89) from the UCSF-BMSR paper.
 
-| Metric | Baseline (96 patch) | Current Best | Improvement |
-|--------|-------------------|--------------|-------------|
-| Overall Dice | 67.2% | 73.1% | +5.9% |
-| Tiny Lesion Dice | 18.5% | 85-92% | +66-74% |
-| Lesion Sensitivity | 71.9% | 92.2% | +20.3% |
-| Voxel Sensitivity | ~65% | 95.6% | +30.6% |
+Trained entirely on a single consumer GPU (RTX 5060 Ti, 16 GB VRAM).
 
-## Ensemble Architecture
+## Architecture
 
-The smart ensemble combines 4 models trained at different patch sizes:
+### Custom Lightweight Ensemble
 
-| Model | Patch Size | Strength |
-|-------|------------|----------|
-| exp3_12patch_maxfn | 12x12x12 | Tiny lesions (<500 voxels) |
-| exp1_8patch | 8x8x8 | Ultra-small lesions |
-| improved_24patch | 24x24x24 | Balanced detection |
-| improved_36patch | 36x36x36 | Large lesions + context |
+- **Network**: LightweightUNet3D with attention gates and residual connections
+- **Input**: 4-channel MRI (T1-pre, T1-Gd, FLAIR, T2)
+- **Ensemble**: 4 models trained at patch sizes 8, 12, 24, 36
+- **Fusion**: Average probabilities, threshold 0.40
+- **Loss**: 0.7 * Tversky (alpha=0.3, beta=0.7) + 0.3 * Focal
+- **Strength**: High sensitivity, especially for tiny/small lesions
 
-**Fusion Strategy**: Union (MAX probability across models) - maximizes sensitivity
+### nnU-Net v2
 
-## Quick Start
+- **Network**: PlainConvUNet, 6 stages [32, 64, 128, 256, 320, 320]
+- **Patch size**: 128^3, batch size 2
+- **Training**: 1000 epochs, SGD + poly LR, Dice + CE loss, deep supervision
+- **Strength**: High precision, better on medium-to-large lesions
 
-### Inference with Smart Ensemble
+### Stacking Meta-Learner
 
-```python
-import torch
-from pathlib import Path
-from src.segmentation.unet import LightweightUNet3D
+A lightweight 3D CNN (~25K params) trained on the probability outputs of both
+the custom ensemble and nnU-Net, combining their complementary strengths.
 
-# Load models
-model_dir = Path('model')
-models = []
-for name in ['exp3_12patch_maxfn', 'exp1_8patch', 'improved_24patch', 'improved_36patch']:
-    model = LightweightUNet3D(in_channels=4, out_channels=1, use_attention=True, use_residual=True)
-    checkpoint = torch.load(model_dir / f'{name}_best.pth')
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    models.append(model)
-
-# Union fusion: take max probability across models
-# See scripts/train_smart_ensemble.py for full implementation
-```
-
-### Evaluation Scripts
+## Installation
 
 ```bash
-# Smart ensemble evaluation
-python scripts/train_smart_ensemble.py
-
-# Confusion matrix at different thresholds
-python scripts/confusion_matrix.py
-
-# Threshold optimization for single model
-python scripts/optimize_threshold.py --model exp3_12patch_maxfn --patch-size 12
-
-# Post-processing evaluation
-python scripts/postprocessing.py
+git clone https://github.com/ckirby04/BrainMetScan.git
+cd BrainMetScan
+pip install -r requirements.txt
 ```
 
-## Key Training Innovations
+Model weights are not included in the repository. Download them from
+[GitHub Releases](https://github.com/ckirby04/BrainMetScan/releases) and place
+them in the `model/` directory:
 
-### 1. Aggressive FN Loss (Tversky alpha=0.1, beta=0.9)
-- 9x penalty for missing lesions vs false positives
-- Critical for achieving 90%+ sensitivity
-
-### 2. Multi-Scale Patch Training
-- Smaller patches (8, 12) dramatically improve tiny lesion detection
-- 2.7x improvement in tiny lesion Dice (18.5% to 50.4% with 48 patch)
-
-### 3. Union-Based Ensemble
-- Take MAX probability across models
-- Ensures any lesion detected by ANY model is included
-- Maximizes sensitivity at cost of some false positives
-
-## Files
-
-```
-1.2/
-├── model/
-│   ├── exp3_12patch_maxfn_best.pth  # Best sensitivity model
-│   ├── exp1_8patch_best.pth          # Ultra-small patch model
-│   ├── improved_24patch_best.pth     # Balanced model
-│   └── improved_36patch_best.pth     # Large patch model
-├── src/
-│   └── segmentation/
-│       ├── unet.py                   # LightweightUNet3D architecture
-│       ├── dataset.py                # BrainMetDataset
-│       ├── losses.py                 # Tversky, FocalDice losses
-│       └── tta.py                    # Test-time augmentation
-├── scripts/
-│   ├── train_smart_ensemble.py       # Ensemble evaluation
-│   ├── confusion_matrix.py           # Confusion matrix generation
-│   ├── optimize_threshold.py         # Threshold optimization
-│   ├── postprocessing.py             # Post-processing evaluation
-│   └── overnight_experiments.py      # Batch training experiments
-├── outputs/
-│   ├── smart_ensemble_results.json   # Ensemble metrics
-│   ├── postprocessing_results.json   # Post-processing results
-│   └── confusion_matrix_*.png        # Confusion matrices
-├── configs/
-│   └── *.yaml                        # Training configurations
-└── README.md                         # This file
+```bash
+python scripts/download_weights.py   # or download manually from Releases
 ```
 
-## Post-Processing Analysis
+## Usage
 
-Post-processing was evaluated but found to reduce sensitivity too much:
+### Inference (Ensemble)
 
-| Method | Voxel Sens | Lesion Sens | Notes |
-|--------|------------|-------------|-------|
-| Baseline (t=0.6) | 96.1% | 85.7% | Recommended |
-| Size filter (50) | 97.7% | 84.1% | Minimal impact |
-| Full pipeline | 86.4% | 77.8% | Too aggressive |
+```bash
+python scripts/run_inference.py \
+  --input path/to/patient_dir \
+  --output path/to/output_dir \
+  --threshold 0.4
+```
 
-**Conclusion**: For clinical use, prioritize high sensitivity. Use threshold 0.6 without post-processing.
+Each patient directory should contain four NIfTI files:
+`t1_pre.nii.gz`, `t1_gd.nii.gz`, `flair.nii.gz`, `t2.nii.gz`
 
-## Next Steps
+### Evaluation
 
-1. **External Validation** - Test on datasets from other institutions
-2. **FDA 510(k) Preparation** - QMS documentation, clinical study design
-3. **Model Improvements** - Self-supervised pretraining on unlabeled data
+```bash
+# Evaluate nnU-Net
+python scripts/evaluate_nnunet.py --fold 0
 
-## Training Details
+# Evaluate custom ensemble
+python scripts/lesionwise_eval.py
 
-| Parameter | Value |
-|-----------|-------|
-| Architecture | LightweightUNet3D with attention + residual |
-| Input Channels | 4 (T1-pre, T1-Gd, FLAIR, T2) |
-| Base Channels | 20 |
-| Loss | Tversky (alpha=0.1, beta=0.9) + Focal Dice |
-| Optimizer | AdamW |
-| Training Data | 566 labeled cases |
+# Compare all models side-by-side
+python scripts/compare_models.py
+```
+
+## Dataset
+
+This project uses the [Stanford BrainMetShare](https://stanfordaimi.azurewebsites.net/datasets/)
+dataset. Data is **not** included in this repository. See [`data/README.md`](data/README.md)
+for download and setup instructions.
+
+## Limitations
+
+- Trained and validated on a single institution dataset (Stanford BrainMetShare)
+- Generalizability to other scanners, field strengths, and protocols is unknown
+- False positive rate needs reduction for clinical deployment
+- **Seeking multi-site MRI data for cross-validation and external validation**
 
 ## Citation
 
-```
-Brain Metastasis Segmentation Model v1.2
-Smart Ensemble with Union Fusion
-Performance: 95.6% voxel sensitivity, 92.2% lesion detection at threshold 0.6
+```bibtex
+@software{kirby2026brainmetscan,
+  author = {Kirby, Clark},
+  title  = {BrainMetScan: Multi-Scale Ensemble for Brain Metastasis Segmentation},
+  year   = {2026},
+  url    = {https://github.com/ckirby04/BrainMetScan}
+}
 ```
 
 ## License
 
-[Your license here]
+MIT License. See [LICENSE](LICENSE).
 
 ## Contact
 
-[Your contact info here]
+Clark Kirby - University of Arkansas
+- GitHub: [@ckirby04](https://github.com/ckirby04)

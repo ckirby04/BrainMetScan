@@ -36,9 +36,7 @@ wheels/
 .ipynb_checkpoints
 
 # Models and outputs (large files)
-models/*.pth
-models/*.pt
-outputs/
+model/
 *.nii.gz
 *.nii
 
@@ -69,9 +67,15 @@ chromadb/
 # Zip files
 *.zip
 
-# Training state markers and caches
-model/training_states/
-model/stacking_cache*/
+# nnU-Net (large data/results directories)
+nnUNet/
+
+# Data
+data/
+
+# Notebooks
+notebooks/
 
 # Misc
 nul
+analysis/

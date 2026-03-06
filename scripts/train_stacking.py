@@ -59,7 +59,22 @@ BASE_MODELS = {
     'improved_36patch': {'patch_size': 36, 'threshold': 0.5},
 }
 
+V2_BASE_MODELS = {
+    'exp1_8patch': {'patch_size': 32, 'threshold': 0.3},
+    'exp3_12patch_maxfn': {'patch_size': 48, 'threshold': 0.25},
+    'improved_24patch': {'patch_size': 64, 'threshold': 0.5},
+    'improved_36patch': {'patch_size': 96, 'threshold': 0.5},
+}
+
 TARGET_SIZE = (128, 128, 128)
+
+# nnU-Net integration paths
+NNUNET_BASE = ROOT / 'nnUNet' / 'nnUNet_results' / 'Dataset001_BrainMets'
+NNUNET_TRAINER = 'nnUNetTrainer__nnUNetPlans__3d_fullres'
+NNUNET_PROBS_DIR = ROOT / 'model' / 'nnunet_probs'
+RESENCM_PROBS_DIR = ROOT / 'model' / 'nnunet_probs_resencm'
+NNUNET_SPLITS = (ROOT / 'nnUNet' / 'nnUNet_preprocessed'
+                 / 'Dataset001_BrainMets' / 'splits_final.json')
 
 # =============================================================================
 # STACKING CLASSIFIER
@@ -161,6 +176,27 @@ def compute_metrics(pred_binary, target):
         'precision': precision.item(),
     }
 
+
+def compute_relaxed_dice(pred_binary_np, target_np, tolerance=2):
+    """Relaxed Dice: dilate GT by `tolerance` voxels, then compute standard Dice.
+
+    Predictions within `tolerance` voxels of the true boundary count as correct,
+    accounting for noisy label boundaries.
+    """
+    from scipy.ndimage import binary_dilation, generate_binary_structure
+    gt_bool = target_np.astype(bool)
+    pred_bool = pred_binary_np.astype(bool)
+    if not gt_bool.any() and not pred_bool.any():
+        return 1.0
+    struct = generate_binary_structure(3, 1)
+    gt_dilated = binary_dilation(gt_bool, structure=struct, iterations=tolerance)
+    tp = (pred_bool & gt_dilated).sum()
+    fp = (pred_bool & ~gt_dilated).sum()
+    fn = (gt_bool & ~pred_bool).sum()
+    if tp == 0 and fp == 0 and fn == 0:
+        return 1.0
+    return float(2 * tp) / float(2 * tp + fp + fn + 1e-8)
+
 # =============================================================================
 # POST-PROCESSING
 # =============================================================================
@@ -188,31 +224,49 @@ def detect_sequences(data_dir):
     return ['t1_pre', 't1_gd', 'flair', 'bravo']
 
 
-def load_volume(case_dir, sequences):
-    """Load and preprocess a full volume."""
+def load_volume(case_dir, sequences, target_size=TARGET_SIZE):
+    """Load and preprocess a full volume. If target_size is None, use native resolution."""
     images = []
     for seq in sequences:
-        path = case_dir / f"{seq}.nii.gz"
-        if path.exists():
-            data = nib.load(str(path)).get_fdata().astype(np.float32)
-            factors = [t / s for t, s in zip(TARGET_SIZE, data.shape)]
-            data = zoom(data, factors, order=1)
+        data = None
+        for ext in ['.npz', '.npy', '.nii.gz']:
+            path = case_dir / f"{seq}{ext}"
+            if path.exists():
+                if ext == '.npz':
+                    data = np.load(str(path))['data'].astype(np.float32)
+                elif ext == '.npy':
+                    data = np.load(str(path)).astype(np.float32)
+                else:
+                    data = nib.load(str(path)).get_fdata().astype(np.float32)
+                break
+
+        if data is not None:
+            if target_size is not None:
+                factors = [t / s for t, s in zip(target_size, data.shape)]
+                data = zoom(data, factors, order=1)
             mean, std = data.mean(), data.std()
             data = (data - mean) / (std + 1e-6)
             images.append(data)
         else:
-            images.append(np.zeros(TARGET_SIZE, dtype=np.float32))
+            shape = target_size if target_size is not None else (256, 256, 256)
+            images.append(np.zeros(shape, dtype=np.float32))
     return np.stack(images, axis=0)
 
 
-def load_mask(case_dir):
-    """Load ground truth mask."""
-    for mask_name in ['seg.nii.gz', 'mask.nii.gz', 'label.nii.gz']:
+def load_mask(case_dir, target_size=TARGET_SIZE):
+    """Load ground truth mask. If target_size is None, use native resolution."""
+    for mask_name in ['seg.npz', 'seg.npy', 'seg.nii.gz', 'mask.nii.gz', 'label.nii.gz']:
         path = case_dir / mask_name
         if path.exists():
-            data = nib.load(str(path)).get_fdata().astype(np.float32)
-            factors = [t / s for t, s in zip(TARGET_SIZE, data.shape)]
-            data = zoom(data, factors, order=0)
+            if mask_name.endswith('.npz'):
+                data = np.load(str(path))['data'].astype(np.float32)
+            elif mask_name.endswith('.npy'):
+                data = np.load(str(path)).astype(np.float32)
+            else:
+                data = nib.load(str(path)).get_fdata().astype(np.float32)
+            if target_size is not None:
+                factors = [t / s for t, s in zip(target_size, data.shape)]
+                data = zoom(data, factors, order=0)
             return (data > 0.5).astype(np.float32)
     return None
 
@@ -232,16 +286,21 @@ def sliding_window_inference(model, volume, patch_size, device, overlap=0.25):
     p = patch_size
     stride = max(int(p * (1 - overlap)), 1)
 
-    # Dynamic batch size: small patches are tiny, fit hundreds in VRAM
-    # 8^3 * 4ch * 4bytes = 8KB per patch vs 36^3 * 4ch * 4bytes = 746KB
+    # Dynamic batch size based on patch size and VRAM
     if p <= 8:
         batch_size = 512
     elif p <= 12:
         batch_size = 256
     elif p <= 24:
         batch_size = 64
+    elif p <= 48:
+        batch_size = 16
+    elif p <= 64:
+        batch_size = 8
+    elif p <= 96:
+        batch_size = 4
     else:
-        batch_size = 32
+        batch_size = 2
 
     # Pad volume if needed
     pad_h = (p - H % p) % p if H % stride != 0 else 0
@@ -272,7 +331,10 @@ def sliding_window_inference(model, volume, patch_size, device, overlap=0.25):
 
             batch = torch.from_numpy(np.stack(patches)).float().to(device)
             with autocast('cuda'):
-                preds = torch.sigmoid(model(batch)).cpu().numpy()
+                out = model(batch)
+                if isinstance(out, tuple):
+                    out = out[0]  # main output (deep supervision)
+                preds = torch.sigmoid(out).cpu().numpy()
 
             for j, (h, w, d) in enumerate(batch_coords):
                 output[h:h+p, w:w+p, d:d+p] += preds[j, 0]
@@ -330,11 +392,13 @@ def tta_sliding_window_inference(model, volume, patch_size, device, overlap=0.25
 # =============================================================================
 # GENERATE BASE MODEL PREDICTIONS
 # =============================================================================
-def generate_predictions(data_dir, cache_dir, device, selected_models=None, overlap=0.5, tta=False):
+def generate_predictions(data_dir, cache_dir, device, selected_models=None, overlap=0.5, tta=False,
+                         v2=False):
     """
     Generate predictions from selected base models on all cases.
     Caches results to disk to avoid regenerating.
     When tta=True, uses test-time augmentation (8 flip combinations).
+    When v2=True, uses v2 model configs (256³ native, deep supervision).
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -349,33 +413,38 @@ def generate_predictions(data_dir, cache_dir, device, selected_models=None, over
     ])
 
     model_dir = ROOT / 'model'
+    base_configs = V2_BASE_MODELS if v2 else BASE_MODELS
+    target_size = None if v2 else TARGET_SIZE
 
     # Filter to selected models
-    models_config = BASE_MODELS
+    models_config = base_configs
     if selected_models:
-        models_config = {k: v for k, v in BASE_MODELS.items() if k in selected_models}
+        models_config = {k: v for k, v in base_configs.items() if k in selected_models}
 
     # Load base models
     models = {}
     for name, config in models_config.items():
-        model_path = model_dir / f'{name}_finetuned.pth'
+        prefix = 'v2_' if v2 else ''
+        model_path = model_dir / f'{prefix}{name}_finetuned.pth'
         if not model_path.exists():
             print(f"WARNING: {model_path} not found, skipping {name}")
             continue
 
         model = LightweightUNet3D(
             in_channels=4, out_channels=1,
-            base_channels=20, use_attention=True, use_residual=True
+            base_channels=20, use_attention=True, use_residual=True,
+            deep_supervision=v2
         ).to(device)
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
         models[name] = (model, config['patch_size'])
-        print(f"  Loaded {name} (Dice={checkpoint.get('dice', 'N/A'):.4f})")
+        print(f"  Loaded {prefix}{name} (Dice={checkpoint.get('dice', 'N/A'):.4f})")
 
     infer_fn_name = "TTA sliding window (8 flips)" if tta else "sliding window"
+    res_label = "256³ native" if v2 else "128³"
     print(f"\nGenerating predictions for {len(all_cases)} cases with {len(models)} models "
-          f"(overlap={overlap}, method={infer_fn_name})...")
+          f"(overlap={overlap}, method={infer_fn_name}, resolution={res_label})...")
 
     for case_dir in tqdm(all_cases, desc="Predicting"):
         case_id = case_dir.name
@@ -385,9 +454,9 @@ def generate_predictions(data_dir, cache_dir, device, selected_models=None, over
         if cache_file.exists():
             continue
 
-        # Load volume
-        volume = load_volume(case_dir, sequences)
-        mask = load_mask(case_dir)
+        # Load volume at appropriate resolution
+        volume = load_volume(case_dir, sequences, target_size=target_size)
+        mask = load_mask(case_dir, target_size=target_size)
         if mask is None:
             continue
 
@@ -398,15 +467,16 @@ def generate_predictions(data_dir, cache_dir, device, selected_models=None, over
                 prob_map = tta_sliding_window_inference(model, volume, patch_size, device, overlap=overlap)
             else:
                 prob_map = sliding_window_inference(model, volume, patch_size, device, overlap=overlap)
-            preds[name] = prob_map
+            preds[name] = prob_map.astype(np.float16)  # Save as float16 to reduce cache size
 
         # Save predictions + mask
         np.savez_compressed(
             cache_file,
-            mask=mask,
+            mask=mask.astype(np.uint8),
             **preds
         )
 
+        # Free model memory between cases
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -416,6 +486,217 @@ def generate_predictions(data_dir, cache_dir, device, selected_models=None, over
     torch.cuda.empty_cache()
 
     return all_cases
+
+# =============================================================================
+# nnU-Net PREDICTION INTEGRATION
+# =============================================================================
+def load_nnunet_predictions_into_cache(cache_dir, data_dir, target_size, fold=0):
+    """
+    Load nnU-Net validation predictions and add them to the stacking cache.
+    Resizes nnU-Net predictions (native space) to match cache resolution.
+
+    Returns list of case_ids that have nnU-Net predictions.
+    """
+    fold_dir = NNUNET_BASE / NNUNET_TRAINER / f'fold_{fold}'
+    val_dir = fold_dir / 'validation'
+
+    if not val_dir.exists():
+        print(f"  nnU-Net validation dir not found: {val_dir}")
+        return []
+
+    pred_files = sorted(val_dir.glob('*.nii.gz'))
+    if not pred_files:
+        print(f"  No nnU-Net prediction files found in {val_dir}")
+        return []
+
+    updated = 0
+    for pred_file in pred_files:
+        # Our setup preserves original case IDs, so pred filename = case_id
+        case_id = pred_file.stem
+        cache_file = Path(cache_dir) / f'{case_id}.npz'
+
+        if not cache_file.exists():
+            continue
+
+        # Check if nnunet prediction already in cache
+        existing = np.load(cache_file)
+        if 'nnunet' in existing:
+            continue
+
+        # Load nnU-Net prediction
+        pred_nii = nib.load(str(pred_file))
+        pred = np.asarray(pred_nii.dataobj, dtype=np.float32)
+
+        # Resize to cache resolution if needed
+        if target_size is not None:
+            pred_resized = zoom(pred, [t / s for t, s in zip(target_size, pred.shape)], order=1)
+        else:
+            # Check if shapes match
+            mask_shape = existing['mask'].shape
+            if pred.shape != mask_shape:
+                pred_resized = zoom(pred, [t / s for t, s in zip(mask_shape, pred.shape)], order=1)
+            else:
+                pred_resized = pred
+
+        # Re-save cache with nnunet prediction added
+        save_dict = {k: existing[k] for k in existing.files}
+        save_dict['nnunet'] = pred_resized.astype(np.float16)
+        np.savez_compressed(cache_file, **save_dict)
+        updated += 1
+
+    print(f"  Added nnU-Net predictions to {updated} cache files")
+    return [f.stem for f in pred_files]
+
+
+def load_nnunet_probs_all_folds(cache_dir):
+    """
+    Load nnU-Net probability predictions from all 5 folds into stacking cache.
+
+    Uses model/nnunet_probs/fold_X/{case_id}.npz files (softmax probs).
+    Each case is loaded from the fold where it was unseen (proper CV).
+    Probabilities are transposed from nnU-Net internal axis order to NIfTI RAS.
+
+    Returns list of case_ids that have nnU-Net predictions.
+    """
+    import json as _json
+
+    if not NNUNET_SPLITS.exists():
+        print(f"  nnU-Net splits file not found: {NNUNET_SPLITS}")
+        return []
+
+    with open(NNUNET_SPLITS) as f:
+        splits = _json.load(f)
+
+    # Map each case -> which fold had it as validation
+    case_to_fold = {}
+    for fold_idx, split in enumerate(splits):
+        for case_id in split['val']:
+            case_to_fold[case_id] = fold_idx
+
+    updated = 0
+    skipped = 0
+
+    for case_id, fold_idx in case_to_fold.items():
+        cache_file = Path(cache_dir) / f'{case_id}.npz'
+        if not cache_file.exists():
+            continue
+
+        try:
+            # Check if nnunet prediction already in cache
+            existing = np.load(cache_file)
+            if 'nnunet' in existing:
+                skipped += 1
+                continue
+
+            # Load probability from the correct fold
+            prob_path = NNUNET_PROBS_DIR / f'fold_{fold_idx}' / f'{case_id}.npz'
+            if not prob_path.exists():
+                continue
+
+            prob_data = np.load(prob_path)
+            # Foreground probability = channel 1, transpose to NIfTI RAS
+            pred = prob_data['probabilities'][1].transpose(2, 1, 0).astype(np.float32)
+
+            # Resize to cache resolution if needed
+            mask_shape = existing['mask'].shape
+            if pred.shape != mask_shape:
+                pred_resized = zoom(pred, [t / s for t, s in zip(mask_shape, pred.shape)], order=1)
+            else:
+                pred_resized = pred
+
+            # Re-save cache with nnunet prediction added
+            save_dict = {k: existing[k] for k in existing.files}
+            save_dict['nnunet'] = pred_resized.astype(np.float16)
+            np.savez_compressed(cache_file, **save_dict)
+            updated += 1
+        except Exception as e:
+            print(f"    WARNING: error on {case_id}, skipping ({e})")
+            continue
+
+        if (updated + skipped) % 100 == 0:
+            print(f"    [{updated + skipped}/{len(case_to_fold)}] "
+                  f"{updated} updated, {skipped} already cached...")
+
+    print(f"  Added nnU-Net probs (all folds) to {updated} cache files "
+          f"({skipped} already cached)")
+    return list(case_to_fold.keys())
+
+
+def load_resencm_probs_all_folds(cache_dir):
+    """
+    Load ResEncM probability predictions from all 5 folds into stacking cache.
+
+    Same pattern as load_nnunet_probs_all_folds but reads from
+    model/nnunet_probs_resencm/fold_X/{case_id}.npz.
+
+    Returns list of case_ids that have ResEncM predictions.
+    """
+    import json as _json
+
+    if not NNUNET_SPLITS.exists():
+        print(f"  nnU-Net splits file not found: {NNUNET_SPLITS}")
+        return []
+
+    if not RESENCM_PROBS_DIR.exists():
+        print(f"  ResEncM probs dir not found: {RESENCM_PROBS_DIR}")
+        print("  Run: python scripts/nnunet_probs.py --mode val "
+              "--trainer nnUNetTrainer__nnUNetResEncUNetMPlans__3d_fullres")
+        return []
+
+    with open(NNUNET_SPLITS) as f:
+        splits = _json.load(f)
+
+    # Map each case -> which fold had it as validation
+    case_to_fold = {}
+    for fold_idx, split in enumerate(splits):
+        for case_id in split['val']:
+            case_to_fold[case_id] = fold_idx
+
+    updated = 0
+    skipped = 0
+
+    for case_id, fold_idx in case_to_fold.items():
+        cache_file = Path(cache_dir) / f'{case_id}.npz'
+        if not cache_file.exists():
+            continue
+
+        try:
+            existing = np.load(cache_file)
+            if 'resencm' in existing:
+                skipped += 1
+                continue
+
+            prob_path = RESENCM_PROBS_DIR / f'fold_{fold_idx}' / f'{case_id}.npz'
+            if not prob_path.exists():
+                continue
+
+            prob_data = np.load(prob_path)
+            # Foreground probability = channel 1, transpose to NIfTI RAS
+            pred = prob_data['probabilities'][1].transpose(2, 1, 0).astype(np.float32)
+
+            # Resize to cache resolution if needed
+            mask_shape = existing['mask'].shape
+            if pred.shape != mask_shape:
+                pred_resized = zoom(pred, [t / s for t, s in zip(mask_shape, pred.shape)], order=1)
+            else:
+                pred_resized = pred
+
+            save_dict = {k: existing[k] for k in existing.files}
+            save_dict['resencm'] = pred_resized.astype(np.float16)
+            np.savez_compressed(cache_file, **save_dict)
+            updated += 1
+        except Exception as e:
+            print(f"    WARNING: error on {case_id}, skipping ({e})")
+            continue
+
+        if (updated + skipped) % 100 == 0:
+            print(f"    [{updated + skipped}/{len(case_to_fold)}] "
+                  f"{updated} updated, {skipped} already cached...")
+
+    print(f"  Added ResEncM probs (all folds) to {updated} cache files "
+          f"({skipped} already cached)")
+    return list(case_to_fold.keys())
+
 
 # =============================================================================
 # STACKING DATASET
@@ -440,12 +721,12 @@ class StackingDataset(Dataset):
         cache_file = self.cache_dir / f'{case_id}.npz'
         data = np.load(cache_file)
 
-        mask = data['mask']  # (H, W, D)
+        mask = data['mask'].astype(np.float32)  # (H, W, D)
 
         # Stack model predictions
         preds = []
         for name in self.model_names:
-            preds.append(data[name])
+            preds.append(data[name].astype(np.float32))
         preds = np.stack(preds, axis=0)  # (4, H, W, D)
 
         # Disagreement features
@@ -611,6 +892,7 @@ def evaluate_all_methods(val_case_ids, cache_dir, model_names, stacking_model, d
                 pred_binary = postprocess_prediction(pred_binary, min_size=min_component_size)
             pred_t = torch.from_numpy(pred_binary).float()
             metrics = compute_metrics(pred_t, mask_t)
+            metrics['relaxed_dice_2'] = compute_relaxed_dice(pred_binary, mask, tolerance=2)
             all_metrics[method_name].append((case_id, metrics))
 
     # Aggregate
@@ -623,6 +905,7 @@ def evaluate_all_methods(val_case_ids, cache_dir, model_names, stacking_model, d
             'sensitivity': np.mean([m['sensitivity'] for _, m in case_metrics]),
             'specificity': np.mean([m['specificity'] for _, m in case_metrics]),
             'precision': np.mean([m['precision'] for _, m in case_metrics]),
+            'relaxed_dice_2': np.mean([m['relaxed_dice_2'] for _, m in case_metrics]),
             'std_dice': np.std([m['dice'] for _, m in case_metrics]),
             'n_cases': len(case_metrics),
             'threshold': thresholds[method_name],
@@ -648,11 +931,11 @@ def analyze_failures(all_metrics, best_method_name, results_path):
 
     # Worst 10 cases
     print(f"\nWorst 10 cases by Dice:")
-    print(f"{'Case ID':<30} {'Dice':<10} {'Sens':<10} {'Prec':<10}")
-    print("-" * 60)
+    print(f"{'Case ID':<30} {'Dice':<10} {'RelD2':<10} {'Sens':<10} {'Prec':<10}")
+    print("-" * 70)
     for case_id, metrics in sorted_cases[:10]:
-        print(f"{case_id:<30} {metrics['dice']:.4f}     {metrics['sensitivity']:.4f}     "
-              f"{metrics['precision']:.4f}")
+        print(f"{case_id:<30} {metrics['dice']:.4f}     {metrics.get('relaxed_dice_2', 0):.4f}     "
+              f"{metrics['sensitivity']:.4f}     {metrics['precision']:.4f}")
 
     # Distribution stats
     dices_arr = np.array(dices)
@@ -669,7 +952,8 @@ def analyze_failures(all_metrics, best_method_name, results_path):
     for case_id, metrics in case_metrics:
         per_case[case_id] = {k: float(v) for k, v in metrics.items()}
 
-    per_case_path = results_path.parent / 'stacking_v3_results_per_case.json'
+    # Derive per-case filename from results path (e.g. stacking_v4_results.json -> stacking_v4_results_per_case.json)
+    per_case_path = results_path.parent / results_path.name.replace('_results.json', '_results_per_case.json')
     with open(per_case_path, 'w') as f:
         json.dump(per_case, f, indent=2)
     print(f"\nPer-case metrics saved to: {per_case_path}")
@@ -679,7 +963,7 @@ def analyze_failures(all_metrics, best_method_name, results_path):
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(description="Train stacking classifier (v3)")
-    parser.add_argument('--epochs', type=int, default=150)
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--patch-size', type=int, default=64,
                         help="Patch size for stacking training (default: 64)")
     parser.add_argument('--batch-size', type=int, default=4)
@@ -703,7 +987,24 @@ def main():
                         help="Patch size for stacking sliding window inference (default: 32)")
     parser.add_argument('--stacking-overlap', type=float, default=0.5,
                         help="Overlap for stacking sliding window inference (default: 0.5)")
+    parser.add_argument('--v2', action='store_true',
+                        help="Use v2 models (256³ native, deep supervision)")
+    parser.add_argument('--include-nnunet', action='store_true',
+                        help="Include nnU-Net predictions as additional stacking input channel")
+    parser.add_argument('--nnunet-fold', type=int, default=0,
+                        help="nnU-Net fold to use for binary predictions (default: 0)")
+    parser.add_argument('--nnunet-all-folds', action='store_true',
+                        help="Use nnU-Net probability predictions from all 5 CV folds")
+    parser.add_argument('--include-resencm', action='store_true',
+                        help="Include ResEncM predictions as additional stacking input channel")
     args = parser.parse_args()
+
+    # Apply v2 defaults if --v2 flag is set
+    if args.v2:
+        if args.models == 'improved_24patch,improved_36patch':
+            args.models = 'exp1_8patch,exp3_12patch_maxfn,improved_24patch,improved_36patch'
+        if args.cache_dir == 'stacking_cache_v3':
+            args.cache_dir = 'stacking_cache_v4'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_dir = ROOT / 'model'
@@ -714,12 +1015,14 @@ def main():
     model_names = [m.strip() for m in args.models.split(',')]
     in_channels = len(model_names) + 2  # N predictions + variance + range
 
+    version = "v4 (256³ v2 models)" if args.v2 else "v3"
     print("=" * 60)
-    print("STACKING CLASSIFIER TRAINING (v3)")
+    print(f"STACKING CLASSIFIER TRAINING ({version})")
     print("=" * 60)
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    print(f"V2 models: {args.v2}")
     print(f"Models: {model_names}")
     print(f"Input channels: {in_channels} ({len(model_names)} preds + variance + range)")
     print(f"Overlap: {args.regen_overlap}")
@@ -747,7 +1050,7 @@ def main():
     all_cases = generate_predictions(
         data_dir, cache_dir, device,
         selected_models=model_names, overlap=args.regen_overlap,
-        tta=args.tta
+        tta=args.tta, v2=args.v2
     )
 
     # Filter to cases that have cached predictions
@@ -758,6 +1061,63 @@ def main():
             cached_cases.append(case_dir.name)
 
     print(f"\nCached predictions: {len(cached_cases)} cases")
+
+    # Optional: add nnU-Net predictions to cache
+    if args.nnunet_all_folds or args.include_nnunet:
+        if args.nnunet_all_folds:
+            print("\n  Adding nnU-Net prob predictions (all 5 folds) to stacking cache...")
+            nn_cases = load_nnunet_probs_all_folds(cache_dir)
+        else:
+            print("\n  Adding nnU-Net predictions to stacking cache...")
+            target_size_nnunet = None if args.v2 else TARGET_SIZE
+            nn_cases = load_nnunet_predictions_into_cache(
+                cache_dir, data_dir, target_size_nnunet, fold=args.nnunet_fold
+            )
+        if nn_cases:
+            model_names.append('nnunet')
+            in_channels = len(model_names) + 2
+            # Filter to only cases that have nnunet in cache
+            valid = []
+            for cid in cached_cases:
+                try:
+                    d = np.load(cache_dir / f'{cid}.npz')
+                    if 'nnunet' in d:
+                        valid.append(cid)
+                except Exception:
+                    pass
+            dropped = len(cached_cases) - len(valid)
+            if dropped > 0:
+                print(f"  Dropped {dropped} cases missing nnunet predictions")
+            cached_cases = valid
+            print(f"  Updated: {len(model_names)} models, {in_channels} input channels, "
+                  f"{len(cached_cases)} cases")
+        else:
+            print("  No nnU-Net predictions available - proceeding without")
+
+    # Optional: add ResEncM predictions to cache
+    if args.include_resencm:
+        print("\n  Adding ResEncM prob predictions (all 5 folds) to stacking cache...")
+        resencm_cases = load_resencm_probs_all_folds(cache_dir)
+        if resencm_cases:
+            model_names.append('resencm')
+            in_channels = len(model_names) + 2
+            # Filter to only cases that have resencm in cache
+            valid = []
+            for cid in cached_cases:
+                try:
+                    d = np.load(cache_dir / f'{cid}.npz')
+                    if 'resencm' in d:
+                        valid.append(cid)
+                except Exception:
+                    pass
+            dropped = len(cached_cases) - len(valid)
+            if dropped > 0:
+                print(f"  Dropped {dropped} cases missing resencm predictions")
+            cached_cases = valid
+            print(f"  Updated: {len(model_names)} models, {in_channels} input channels, "
+                  f"{len(cached_cases)} cases")
+        else:
+            print("  No ResEncM predictions available - proceeding without")
 
     # =========================================================================
     # STEP 2: Train/val split (same seed as fine-tuning)
@@ -813,8 +1173,9 @@ def main():
     scaler = GradScaler('cuda')
 
     # Resume if checkpoint exists and config matches
-    stacking_state_path = state_dir / 'stacking_v3_finetune_state.pth'
-    stacking_best_path = model_dir / 'stacking_v3_classifier.pth'
+    stacking_tag = 'v4' if args.v2 else 'v3'
+    stacking_state_path = state_dir / f'stacking_{stacking_tag}_finetune_state.pth'
+    stacking_best_path = model_dir / f'stacking_{stacking_tag}_classifier.pth'
     start_epoch = 1
     best_dice = 0
     history = {'train_loss': [], 'val_dice': [], 'val_sens': [], 'val_spec': []}
@@ -852,6 +1213,9 @@ def main():
             stacking_state_path.unlink()
             if stacking_best_path.exists():
                 stacking_best_path.unlink()
+
+    patience = 30
+    no_improve_count = 0
 
     for epoch in range(start_epoch, args.epochs + 1):
         # --- TRAIN ---
@@ -918,6 +1282,7 @@ def main():
 
         if improved:
             best_dice = avg_dice
+            no_improve_count = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': stacking_model.state_dict(),
@@ -929,6 +1294,11 @@ def main():
                 'patch_size': args.patch_size,
                 'tta': args.tta,
             }, stacking_best_path)
+        else:
+            no_improve_count += 1
+            if no_improve_count >= patience:
+                print(f"\n  Early stopping: no improvement for {patience} epochs")
+                break
 
         # Save resume state
         torch.save({
@@ -985,16 +1355,17 @@ def main():
     )
 
     # Print results table
-    print(f"\n{'Method':<25} {'Dice':<10} {'Sens':<10} {'Spec':<10} {'Prec':<10} {'Thresh':<8}")
-    print("-" * 75)
+    print(f"\n{'Method':<25} {'Dice':<10} {'RelDice2':<10} {'Sens':<10} {'Prec':<10} {'Thresh':<8}")
+    print("-" * 80)
 
     for method_name, metrics in sorted(results.items(), key=lambda x: -x[1]['dice']):
-        print(f"{method_name:<25} {metrics['dice']:.4f}     {metrics['sensitivity']:.4f}     "
-              f"{metrics['specificity']:.4f}     {metrics['precision']:.4f}     "
+        print(f"{method_name:<25} {metrics['dice']:.4f}     {metrics['relaxed_dice_2']:.4f}     "
+              f"{metrics['sensitivity']:.4f}     {metrics['precision']:.4f}     "
               f"{metrics['threshold']:.2f}")
 
     # Save results
-    results_path = model_dir / 'stacking_v3_results.json'
+    results_tag = 'v4' if args.v2 else 'v3'
+    results_path = model_dir / f'stacking_{results_tag}_results.json'
     json_results = {}
     for k, v in results.items():
         json_results[k] = {kk: float(vv) for kk, vv in v.items()}
