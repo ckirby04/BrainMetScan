@@ -31,6 +31,9 @@ with nnU-Net v2, trained on the [Stanford BrainMetShare](https://stanfordaimi.az
 
 Trained entirely on a single consumer GPU (RTX 5060 Ti, 16 GB VRAM).
 
+![Example segmentation](docs/figures/example_seg.png)
+*Axial slices from a validation case with 5 metastases (Dice = 0.874). Left: T1-Gd MRI. Center: ground truth (red). Right: nnU-Net prediction (green).*
+
 ## Architecture
 
 ### Custom Lightweight Ensemble
