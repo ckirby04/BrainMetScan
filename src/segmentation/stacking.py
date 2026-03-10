@@ -283,15 +283,15 @@ def run_stacking_inference(cache_path, model, device, target_size=None,
         individual[name] = preds[i]
 
     # Upsample to target size if needed
-    if target_size is not None and target_size != stacking_prob.shape:
+    if target_size is not None and tuple(target_size) != tuple(stacking_prob.shape):
         factors = [t / s for t, s in zip(target_size, stacking_prob.shape)]
-        stacking_prob = zoom(stacking_prob, factors, order=1)
-        agreement = zoom(agreement, factors, order=0)
+        stacking_prob = zoom(stacking_prob.astype(np.float32), factors, order=1)
+        agreement = zoom(agreement.astype(np.float32), factors, order=0)
         for name in individual:
-            individual[name] = zoom(individual[name], factors, order=1)
+            individual[name] = zoom(individual[name].astype(np.float32), factors, order=1)
 
     return {
-        'fused': stacking_prob,
-        'individual': individual,
-        'agreement': agreement,
+        'fused': stacking_prob.astype(np.float32),
+        'individual': {k: v.astype(np.float32) for k, v in individual.items()},
+        'agreement': agreement.astype(np.float32),
     }
