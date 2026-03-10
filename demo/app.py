@@ -1074,97 +1074,101 @@ def extract_lesion_features(mask, image=None):
 # VISUALIZATION - MULTI-VIEW
 # ============================================================================
 
-def create_multiview_visualization(sequences, prediction, ground_truth, slice_indices, show_overlay=True, confidence_threshold=0.5):
-    """Create a professional multi-view visualization (Axial, Sagittal, Coronal)"""
+def create_multiview_visualization(sequences, prediction, ground_truth, slice_indices, show_overlay=True, confidence_threshold=0.5, slice_axis="Axial"):
+    """Create a single-axis 4-panel visualization (MRI, Confidence, GT, Comparison).
 
-    fig = plt.figure(figsize=(16, 12), facecolor='#1a1a2e')
-    gs = GridSpec(3, 4, figure=fig, hspace=0.15, wspace=0.1)
+    Args:
+        slice_axis: One of "Axial", "Sagittal", "Coronal"
+    """
+    fig = plt.figure(figsize=(16, 5), facecolor='#1a1a2e')
+    gs = GridSpec(1, 4, figure=fig, wspace=0.1)
 
     mri = sequences['t1_gd']
     H, W, D = mri.shape
     ax_idx, sag_idx, cor_idx = slice_indices
 
-    views = [
-        ('Axial', mri[:, :, ax_idx], prediction[:, :, ax_idx], ground_truth[:, :, ax_idx], 0),
-        ('Sagittal', mri[sag_idx, :, :], prediction[sag_idx, :, :], ground_truth[sag_idx, :, :], 1),
-        ('Coronal', mri[:, cor_idx, :], prediction[:, cor_idx, :], ground_truth[:, cor_idx, :], 2),
-    ]
+    if slice_axis == "Sagittal":
+        view_name = "Sagittal"
+        mri_slice = mri[sag_idx, :, :]
+        pred_slice = prediction[sag_idx, :, :]
+        gt_slice = ground_truth[sag_idx, :, :]
+    elif slice_axis == "Coronal":
+        view_name = "Coronal"
+        mri_slice = mri[:, cor_idx, :]
+        pred_slice = prediction[:, cor_idx, :]
+        gt_slice = ground_truth[:, cor_idx, :]
+    else:
+        view_name = "Axial"
+        mri_slice = mri[:, :, ax_idx]
+        pred_slice = prediction[:, :, ax_idx]
+        gt_slice = ground_truth[:, :, ax_idx]
 
-    for view_name, mri_slice, pred_slice, gt_slice, row in views:
-        # Rotate for proper orientation
-        mri_slice = np.rot90(mri_slice)
-        pred_slice = np.rot90(pred_slice)
-        gt_slice = np.rot90(gt_slice)
+    # Rotate for proper orientation
+    mri_slice = np.rot90(mri_slice)
+    pred_slice = np.rot90(pred_slice)
+    gt_slice = np.rot90(gt_slice)
 
-        # Normalize MRI
-        vmin, vmax = np.percentile(mri_slice, [1, 99])
-        mri_display = np.clip((mri_slice - vmin) / (vmax - vmin + 1e-8), 0, 1)
+    # Normalize MRI
+    vmin, vmax = np.percentile(mri_slice, [1, 99])
+    mri_display = np.clip((mri_slice - vmin) / (vmax - vmin + 1e-8), 0, 1)
 
-        # Column 0: Raw MRI
-        ax0 = fig.add_subplot(gs[row, 0])
-        ax0.imshow(mri_display, cmap='gray')
-        ax0.set_title(f'{view_name} - MRI', color='white', fontsize=11, fontweight='bold', pad=8)
-        ax0.axis('off')
-        ax0.set_facecolor('#1a1a2e')
+    # Column 0: Raw MRI
+    ax0 = fig.add_subplot(gs[0, 0])
+    ax0.imshow(mri_display, cmap='gray')
+    ax0.set_title(f'{view_name} - MRI', color='white', fontsize=12, fontweight='bold', pad=8)
+    ax0.axis('off')
+    ax0.set_facecolor('#1a1a2e')
 
-        # Column 1: MRI + Prediction overlay (confidence heatmap)
-        ax1 = fig.add_subplot(gs[row, 1])
-        ax1.imshow(mri_display, cmap='gray')
-        if show_overlay and np.any(pred_slice > 0.1):
-            # Create confidence heatmap overlay
-            pred_rgba = plt.cm.hot(pred_slice)
-            pred_rgba[..., 3] = pred_slice * 0.7
-            ax1.imshow(pred_rgba)
-            # Add threshold contour
-            if np.any(pred_slice > confidence_threshold):
-                ax1.contour(pred_slice, levels=[confidence_threshold], colors=['cyan'], linewidths=1.5)
-        ax1.set_title(f'{view_name} - Confidence', color='#ef4444', fontsize=11, fontweight='bold', pad=8)
-        ax1.axis('off')
-        ax1.set_facecolor('#1a1a2e')
+    # Column 1: MRI + Prediction overlay (confidence heatmap)
+    ax1 = fig.add_subplot(gs[0, 1])
+    ax1.imshow(mri_display, cmap='gray')
+    if show_overlay and np.any(pred_slice > 0.1):
+        pred_rgba = plt.cm.hot(pred_slice)
+        pred_rgba[..., 3] = pred_slice * 0.7
+        ax1.imshow(pred_rgba)
+        if np.any(pred_slice > confidence_threshold):
+            ax1.contour(pred_slice, levels=[confidence_threshold], colors=['cyan'], linewidths=1.5)
+    ax1.set_title(f'{view_name} - Confidence', color='#ef4444', fontsize=12, fontweight='bold', pad=8)
+    ax1.axis('off')
+    ax1.set_facecolor('#1a1a2e')
 
-        # Column 2: MRI + Ground Truth overlay
-        ax2 = fig.add_subplot(gs[row, 2])
-        ax2.imshow(mri_display, cmap='gray')
-        if show_overlay and np.any(gt_slice > 0.5):
-            gt_rgba = np.zeros((*gt_slice.shape, 4))
-            gt_mask = gt_slice > 0.5
-            gt_rgba[gt_mask, 1] = 1.0  # Green
-            gt_rgba[gt_mask, 3] = 0.6
-            ax2.imshow(gt_rgba)
-        ax2.set_title(f'{view_name} - Ground Truth', color='#10b981', fontsize=11, fontweight='bold', pad=8)
-        ax2.axis('off')
-        ax2.set_facecolor('#1a1a2e')
+    # Column 2: MRI + Ground Truth overlay
+    ax2 = fig.add_subplot(gs[0, 2])
+    ax2.imshow(mri_display, cmap='gray')
+    if show_overlay and np.any(gt_slice > 0.5):
+        gt_rgba = np.zeros((*gt_slice.shape, 4))
+        gt_mask = gt_slice > 0.5
+        gt_rgba[gt_mask, 1] = 1.0
+        gt_rgba[gt_mask, 3] = 0.6
+        ax2.imshow(gt_rgba)
+    ax2.set_title(f'{view_name} - Ground Truth', color='#10b981', fontsize=12, fontweight='bold', pad=8)
+    ax2.axis('off')
+    ax2.set_facecolor('#1a1a2e')
 
-        # Column 3: Comparison using confidence threshold
-        ax3 = fig.add_subplot(gs[row, 3])
-        ax3.imshow(mri_display, cmap='gray')
-        if show_overlay:
-            overlay = np.zeros((*mri_display.shape, 4))
-            pred_mask = pred_slice > confidence_threshold
-            gt_mask = gt_slice > 0.5
-            overlap = pred_mask & gt_mask
+    # Column 3: Comparison
+    ax3 = fig.add_subplot(gs[0, 3])
+    ax3.imshow(mri_display, cmap='gray')
+    if show_overlay:
+        overlay = np.zeros((*mri_display.shape, 4))
+        pred_mask = pred_slice > confidence_threshold
+        gt_mask = gt_slice > 0.5
+        overlap = pred_mask & gt_mask
+        fp = pred_mask & ~gt_mask
+        fn = gt_mask & ~pred_mask
 
-            # Red for false positives
-            fp = pred_mask & ~gt_mask
-            overlay[fp, 0] = 1.0
-            overlay[fp, 3] = 0.6
+        overlay[fp, 0] = 1.0
+        overlay[fp, 3] = 0.6
+        overlay[fn, 1] = 1.0
+        overlay[fn, 3] = 0.6
+        overlay[overlap, 0] = 1.0
+        overlay[overlap, 1] = 1.0
+        overlay[overlap, 3] = 0.7
+        ax3.imshow(overlay)
+    ax3.set_title(f'{view_name} - Comparison', color='#fbbf24', fontsize=12, fontweight='bold', pad=8)
+    ax3.axis('off')
+    ax3.set_facecolor('#1a1a2e')
 
-            # Green for false negatives
-            fn = gt_mask & ~pred_mask
-            overlay[fn, 1] = 1.0
-            overlay[fn, 3] = 0.6
-
-            # Yellow for overlap (true positives)
-            overlay[overlap, 0] = 1.0
-            overlay[overlap, 1] = 1.0
-            overlay[overlap, 3] = 0.7
-
-            ax3.imshow(overlay)
-        ax3.set_title(f'{view_name} - Comparison', color='#fbbf24', fontsize=11, fontweight='bold', pad=8)
-        ax3.axis('off')
-        ax3.set_facecolor('#1a1a2e')
-
-    # Add legend at the bottom
+    # Legend
     legend_elements = [
         mpatches.Patch(facecolor='#fbbf24', label='True Positive (Overlap)'),
         mpatches.Patch(facecolor='#ef4444', label='False Positive (Pred Only)'),
@@ -1174,7 +1178,7 @@ def create_multiview_visualization(sequences, prediction, ground_truth, slice_in
                fontsize=10, facecolor='#1a1a2e', edgecolor='none',
                labelcolor='white', framealpha=0)
 
-    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=130, bbox_inches='tight', facecolor='#1a1a2e', edgecolor='none')
@@ -2205,7 +2209,7 @@ def generate_clinical_report(case_name, gt_features, pred_features, dice_score, 
 # MAIN PROCESSING
 # ============================================================================
 
-def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, progress=gr.Progress()):
+def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, slice_axis="Axial", progress=gr.Progress()):
     """Main processing function with ensemble support"""
     global _prediction_cache, _probability_cache
 
@@ -2227,15 +2231,21 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, prog
 
         H, W, D = sequences['t1_gd'].shape
 
-        # Calculate slice indices
-        ax_idx = int((slice_pct / 100) * (D - 1))
-
-        # For sagittal and coronal, find slices with lesion content or use center
-        gt_sum_sag = np.sum(ground_truth, axis=(1, 2))
-        gt_sum_cor = np.sum(ground_truth, axis=(0, 2))
-
-        sag_idx = np.argmax(gt_sum_sag) if np.max(gt_sum_sag) > 0 else H // 2
-        cor_idx = np.argmax(gt_sum_cor) if np.max(gt_sum_cor) > 0 else W // 2
+        # Calculate slice index for the selected axis from the slider
+        if slice_axis == "Sagittal":
+            sag_idx = int((slice_pct / 100) * (H - 1))
+            ax_idx = int(np.argmax(np.sum(ground_truth, axis=(0, 1)))) if np.any(ground_truth > 0.5) else D // 2
+            cor_idx = int(np.argmax(np.sum(ground_truth, axis=(0, 2)))) if np.any(ground_truth > 0.5) else W // 2
+        elif slice_axis == "Coronal":
+            cor_idx = int((slice_pct / 100) * (W - 1))
+            ax_idx = int(np.argmax(np.sum(ground_truth, axis=(0, 1)))) if np.any(ground_truth > 0.5) else D // 2
+            sag_idx = int(np.argmax(np.sum(ground_truth, axis=(1, 2)))) if np.any(ground_truth > 0.5) else H // 2
+        else:  # Axial
+            ax_idx = int((slice_pct / 100) * (D - 1))
+            gt_sum_sag = np.sum(ground_truth, axis=(1, 2))
+            gt_sum_cor = np.sum(ground_truth, axis=(0, 2))
+            sag_idx = int(np.argmax(gt_sum_sag)) if np.max(gt_sum_sag) > 0 else H // 2
+            cor_idx = int(np.argmax(gt_sum_cor)) if np.max(gt_sum_cor) > 0 else W // 2
 
         # Run inference - cache probability maps
         cache_key = f"{case_name}_ensemble" if is_ensemble else case_name
@@ -2251,6 +2261,22 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, prog
         else:
             ensemble_result = _probability_cache[cache_key]
             prediction_volume = ensemble_result['fused']
+
+        # Resize prediction to match MRI if shapes differ (e.g. cache at 256^3, MRI at 256x256x150)
+        mri_shape = sequences['t1_gd'].shape
+        if prediction_volume.shape != mri_shape:
+            from scipy.ndimage import zoom as _zoom
+            factors = [t / s for t, s in zip(mri_shape, prediction_volume.shape)]
+            prediction_volume = _zoom(prediction_volume.astype(np.float32), factors, order=1)
+            # Also resize individual predictions and agreement in the cached result
+            ensemble_result = _probability_cache[cache_key]
+            ensemble_result['fused'] = prediction_volume
+            if ensemble_result.get('agreement') is not None and ensemble_result['agreement'].shape != mri_shape:
+                ensemble_result['agreement'] = _zoom(ensemble_result['agreement'].astype(np.float32), factors, order=0)
+            for mname in list(ensemble_result.get('individual', {}).keys()):
+                pred = ensemble_result['individual'][mname]
+                if pred.shape != mri_shape:
+                    ensemble_result['individual'][mname] = _zoom(pred.astype(np.float32), factors, order=1)
 
         # Also store in old cache for compatibility
         _prediction_cache[case_name] = prediction_volume
@@ -2281,7 +2307,8 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, prog
         show_overlay = view_mode != "MRI Only"
         main_img = create_multiview_visualization(
             sequences, prediction_volume, ground_truth,
-            (ax_idx, sag_idx, cor_idx), show_overlay, confidence_threshold
+            (ax_idx, sag_idx, cor_idx), show_overlay, confidence_threshold,
+            slice_axis=slice_axis
         )
 
         nav_img = create_slice_navigator(ground_truth, prediction_volume, ax_idx, confidence_threshold)
@@ -2307,15 +2334,19 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, prog
         num_models = _model_info.get('num_models', 2)
         model_status = f"{num_models}-Model Ensemble" if is_ensemble else "Single Model"
         rag_status = f"{len(retrieval_results)} refs" if retrieval_results else "N/A"
+        # Show the active axis prominently
+        axis_info = {
+            "Axial": f"**Axial Slice:** {ax_idx + 1} of {D}",
+            "Sagittal": f"**Sagittal Slice:** {sag_idx + 1} of {H}",
+            "Coronal": f"**Coronal Slice:** {cor_idx + 1} of {W}",
+        }
         slice_info = f"""
 ### Model
 - **Type:** {model_status}
 - **Threshold:** {confidence_threshold}
 
-### Current View
-- **Axial Slice:** {ax_idx + 1} of {D}
-- **Sagittal Slice:** {sag_idx + 1} of {H}
-- **Coronal Slice:** {cor_idx + 1} of {W}
+### Current View ({slice_axis})
+- {axis_info[slice_axis]}
 
 ### Volume Statistics
 - **Dice Score:** {dice_score:.1%}
@@ -2854,9 +2885,15 @@ def create_demo():
                 )
 
                 gr.Markdown("### Navigation")
+                slice_axis = gr.Radio(
+                    choices=["Axial", "Sagittal", "Coronal"],
+                    value="Axial",
+                    label="Slice Axis",
+                    info="Select which anatomical plane to view"
+                )
                 slice_slider = gr.Slider(
                     minimum=0, maximum=100, value=50, step=1,
-                    label="Axial Slice Position",
+                    label="Slice Position",
                     info="Drag to navigate through slices"
                 )
 
@@ -3052,11 +3089,11 @@ def create_demo():
         """)
 
         # Helper function to process and update visibility
-        def process_and_show(case_name, slice_pct, view_mode, confidence_threshold):
+        def process_and_show(case_name, slice_pct, view_mode, confidence_threshold, slice_axis_val):
             if not case_name:
                 return None, None, None, None, "*Select a case and run analysis*", "", gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
 
-            result = process_case(case_name, slice_pct, view_mode, confidence_threshold)
+            result = process_case(case_name, slice_pct, view_mode, confidence_threshold, slice_axis=slice_axis_val)
             # Return results + visibility updates: hide placeholder, show analysis content, show quick stats
             # result = (main_img, nav_img, metrics_img, ensemble_img, slice_info, report)
             return result[0], result[1], result[2], result[3], result[4], result[5], gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
@@ -3064,7 +3101,7 @@ def create_demo():
         # Event Handlers
         run_btn.click(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
@@ -3074,7 +3111,7 @@ def create_demo():
             outputs=[slice_slider]
         ).then(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
@@ -3084,25 +3121,31 @@ def create_demo():
             outputs=[slice_slider]
         ).then(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         slice_slider.release(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         view_mode.change(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         confidence_slider.release(
             fn=process_and_show,
-            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider],
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
+            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+        )
+
+        slice_axis.change(
+            fn=process_and_show,
+            inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
             outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
