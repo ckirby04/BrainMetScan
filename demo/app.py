@@ -1246,10 +1246,35 @@ def create_slice_navigator(ground_truth, prediction, current_slice, confidence_t
     return img
 
 
-def create_metrics_chart(gt_features, pred_features, dice_score):
-    """Create a visual metrics comparison chart"""
+def compute_relaxed_dice(pred_binary, gt_binary, margin=2):
+    """Compute relaxed Dice score with a tolerance margin (in voxels).
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4), facecolor='white')
+    A predicted voxel is considered a true positive if it falls within
+    `margin` voxels of any ground truth voxel, and vice versa.
+    """
+    from scipy.ndimage import binary_dilation, generate_binary_structure
+    struct = generate_binary_structure(3, 1)  # 6-connectivity
+
+    # Dilate GT and pred by margin
+    gt_dilated = binary_dilation(gt_binary > 0.5, structure=struct, iterations=margin)
+    pred_dilated = binary_dilation(pred_binary > 0.5, structure=struct, iterations=margin)
+
+    # Relaxed TP: pred voxels within margin of GT + GT voxels within margin of pred
+    tp_pred = np.sum((pred_binary > 0.5) & gt_dilated)
+    tp_gt = np.sum((gt_binary > 0.5) & pred_dilated)
+
+    total_pred = np.sum(pred_binary > 0.5)
+    total_gt = np.sum(gt_binary > 0.5)
+
+    if total_pred + total_gt == 0:
+        return 1.0
+    return float((tp_pred + tp_gt) / (total_pred + total_gt + 1e-8))
+
+
+def create_metrics_chart(gt_features, pred_features, dice_score, relaxed_dice=None):
+    """Create a visual metrics comparison chart with Dice, Relaxed Dice @2, volumes, and lesion count."""
+
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4), facecolor='white')
 
     # Chart 1: Volume Comparison Bar Chart
     ax1 = axes[0]
@@ -1260,8 +1285,8 @@ def create_metrics_chart(gt_features, pred_features, dice_score):
     x = np.arange(len(metrics))
     width = 0.35
 
-    bars1 = ax1.bar(x - width/2, gt_vals, width, label='Ground Truth', color='#10b981', alpha=0.8)
-    bars2 = ax1.bar(x + width/2, pred_vals, width, label='Prediction', color='#ef4444', alpha=0.8)
+    ax1.bar(x - width/2, gt_vals, width, label='Ground Truth', color='#10b981', alpha=0.8)
+    ax1.bar(x + width/2, pred_vals, width, label='Prediction', color='#ef4444', alpha=0.8)
 
     ax1.set_ylabel('Voxels', fontweight='500')
     ax1.set_xticks(x)
@@ -1274,15 +1299,9 @@ def create_metrics_chart(gt_features, pred_features, dice_score):
     # Chart 2: Dice Score Gauge
     ax2 = axes[1]
     ax2.set_aspect('equal')
-
-    # Create a semi-circle gauge
     theta = np.linspace(np.pi, 0, 100)
-    r = 1
-
-    # Background arc (gray)
     ax2.fill_between(np.cos(theta), 0, np.sin(theta), alpha=0.2, color='gray')
 
-    # Colored arc based on dice score
     filled_theta = np.linspace(np.pi, np.pi - (dice_score * np.pi), 100)
     if dice_score >= 0.7:
         color = '#10b981'
@@ -1294,23 +1313,44 @@ def create_metrics_chart(gt_features, pred_features, dice_score):
         color = '#ef4444'
 
     ax2.fill_between(np.cos(filled_theta), 0, np.sin(filled_theta), alpha=0.8, color=color)
-
-    # Center text
     ax2.text(0, 0.3, f'{dice_score:.1%}', ha='center', va='center', fontsize=28, fontweight='bold', color=color)
     ax2.text(0, -0.1, 'Dice Score', ha='center', va='center', fontsize=12, color='#64748b')
-
     ax2.set_xlim(-1.2, 1.2)
     ax2.set_ylim(-0.3, 1.2)
     ax2.axis('off')
     ax2.set_title('Segmentation Accuracy', fontweight='bold', fontsize=12)
 
-    # Chart 3: Lesion Count
-    ax3 = axes[2]
+    # Chart 3: Relaxed Dice @2 Gauge
+    ax_rd = axes[2]
+    ax_rd.set_aspect('equal')
+    ax_rd.fill_between(np.cos(theta), 0, np.sin(theta), alpha=0.2, color='gray')
+
+    rd = relaxed_dice if relaxed_dice is not None else 0.0
+    filled_rd = np.linspace(np.pi, np.pi - (rd * np.pi), 100)
+    if rd >= 0.8:
+        rd_color = '#10b981'
+    elif rd >= 0.6:
+        rd_color = '#3b82f6'
+    elif rd >= 0.4:
+        rd_color = '#f59e0b'
+    else:
+        rd_color = '#ef4444'
+
+    ax_rd.fill_between(np.cos(filled_rd), 0, np.sin(filled_rd), alpha=0.8, color=rd_color)
+    ax_rd.text(0, 0.3, f'{rd:.1%}', ha='center', va='center', fontsize=28, fontweight='bold', color=rd_color)
+    ax_rd.text(0, -0.1, 'Relaxed Dice @2', ha='center', va='center', fontsize=11, color='#64748b')
+    ax_rd.set_xlim(-1.2, 1.2)
+    ax_rd.set_ylim(-0.3, 1.2)
+    ax_rd.axis('off')
+    ax_rd.set_title('Boundary-Tolerant Accuracy', fontweight='bold', fontsize=12)
+
+    # Chart 4: Lesion Count
+    ax3 = axes[3]
     categories = ['Ground Truth', 'Prediction']
     counts = [gt_features['num_lesions'], pred_features['num_lesions']]
-    colors = ['#10b981', '#ef4444']
+    bar_colors = ['#10b981', '#ef4444']
 
-    bars = ax3.bar(categories, counts, color=colors, alpha=0.8, width=0.5)
+    bars = ax3.bar(categories, counts, color=bar_colors, alpha=0.8, width=0.5)
 
     for bar, count in zip(bars, counts):
         ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
@@ -2214,7 +2254,7 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, slic
     global _prediction_cache, _probability_cache
 
     if not case_name:
-        return None, None, None, None, "Please select a case", ""
+        return None, None, None, "Please select a case", ""
 
     try:
         # Try to load stacking/ensemble first, fall back to single model
@@ -2286,11 +2326,12 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, slic
         # Extract features at current threshold
         pred_features = extract_lesion_features((prediction_volume > confidence_threshold).astype(np.float32), sequences['t1_gd'])
 
-        # Calculate Dice at current threshold
+        # Calculate Dice and Relaxed Dice @2 at current threshold
         gt_binary = (ground_truth > 0.5).astype(np.float32)
         pred_binary = (prediction_volume > confidence_threshold).astype(np.float32)
         intersection = np.sum(gt_binary * pred_binary)
         dice_score = (2 * intersection) / (np.sum(gt_binary) + np.sum(pred_binary) + 1e-8)
+        relaxed_dice = compute_relaxed_dice(pred_binary, gt_binary, margin=2)
 
         # RAG evidence retrieval
         progress(0.65, desc="Retrieving literature evidence...")
@@ -2312,16 +2353,7 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, slic
         )
 
         nav_img = create_slice_navigator(ground_truth, prediction_volume, ax_idx, confidence_threshold)
-        metrics_img = create_metrics_chart(gt_features, pred_features, dice_score)
-
-        # Create ensemble details visualization
-        ensemble_result = _probability_cache[cache_key]
-        if ensemble_result.get('individual'):
-            ensemble_img = create_ensemble_details_visualization(
-                sequences, ensemble_result, ground_truth, ax_idx, confidence_threshold
-            )
-        else:
-            ensemble_img = None
+        metrics_img = create_metrics_chart(gt_features, pred_features, dice_score, relaxed_dice=relaxed_dice)
 
         progress(0.9, desc="Generating report...")
         mri_meta = {'dimensions': (H, W, D), 'sequences': list(sequences.keys())}
@@ -2359,12 +2391,12 @@ def process_case(case_name, slice_pct, view_mode, confidence_threshold=0.5, slic
 
         progress(1.0, desc="Complete!")
 
-        return main_img, nav_img, metrics_img, ensemble_img, slice_info, report
+        return main_img, nav_img, metrics_img, slice_info, report
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return None, None, None, None, f"Error: {str(e)}", ""
+        return None, None, None, f"Error: {str(e)}", ""
 
 
 def find_best_slice(case_name):
@@ -2862,12 +2894,6 @@ def create_demo():
                     </svg>
                     RAG-Enhanced Reports
                 </div>
-                <div class="header-badge" style="background: #059669; box-shadow: 0 4px 12px rgba(5, 150, 105, 0.4);">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                    </svg>
-                    RECIST 1.1
-                </div>
             </div>
         </div>
         """)
@@ -3017,31 +3043,6 @@ def create_demo():
                             </div>
                             """)
 
-                        with gr.Tab("Ensemble Details"):
-                            ensemble_image = gr.Image(
-                                label="Per-Model Predictions & Agreement",
-                                type="pil"
-                            )
-
-                            gr.HTML("""
-                            <div style="background: #1a1a2e; padding: 16px; border-radius: 12px; margin-top: 16px;">
-                                <p style="color: #a8a8a3; font-size: 0.9em; margin: 0 0 12px 0;">
-                                    <strong style="color: #ffffff;">Stacking Classifier:</strong> 6-model stacking classifier combining 4 patch-size models + nnU-Net 3D/2D.
-                                </p>
-                                <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-                                    <div style="color: #ff6b6b;">8-patch: Finest detail</div>
-                                    <div style="color: #4ecdc4;">12-patch: Fine detail</div>
-                                    <div style="color: #45b7d1;">24-patch: Balanced</div>
-                                    <div style="color: #a78bfa;">36-patch: Context</div>
-                                    <div style="color: #f59e0b;">nnU-Net 3D</div>
-                                    <div style="color: #ec4899;">nnU-Net 2D</div>
-                                </div>
-                                <p style="color: #878681; font-size: 0.85em; margin: 12px 0 0 0;">
-                                    Agreement map shows where models agree (darker red = more models agree, yellow = 1 model).
-                                </p>
-                            </div>
-                            """)
-
                         with gr.Tab("Slice Navigator"):
                             nav_image = gr.Image(
                                 label="Lesion Distribution Across Slices",
@@ -3057,33 +3058,14 @@ def create_demo():
                         with gr.Tab("Clinical Report"):
                             report_output = gr.HTML(label="AI-Generated Clinical Report")
 
-                        with gr.Tab("Longitudinal RECIST"):
-                            gr.Markdown("### Treatment Response Assessment (RECIST 1.1)")
-                            gr.Markdown("*Compare two timepoints to classify treatment response as CR/PR/SD/PD.*")
-                            with gr.Row():
-                                baseline_dropdown = gr.Dropdown(
-                                    choices=available_cases,
-                                    label="Baseline Case",
-                                    info="Select the earlier scan"
-                                )
-                                followup_dropdown = gr.Dropdown(
-                                    choices=available_cases,
-                                    label="Follow-up Case",
-                                    info="Select the later scan"
-                                )
-                            compare_btn = gr.Button("Compare Timepoints", variant="primary")
-                            recist_image = gr.Image(label="RECIST Comparison", type="pil")
-                            recist_report = gr.HTML(label="RECIST Report")
-
         # Footer
         gr.HTML("""
         <div class="footer">
             <p style="font-weight: 600; color: #ffffff; margin-bottom: 8px; font-size: 1.1em;">BrainMetScan</p>
-            <p style="color: #a8a8a3;">6-Model Stacking Classifier (~78% Dice)  ·  RAG-Enhanced Reports  ·  RECIST 1.1  ·  BiomedCLIP + BM25</p>
+            <p style="color: #a8a8a3;">6-Model Stacking Classifier (~78% Dice)  ·  RAG-Enhanced Reports  ·  BiomedCLIP + BM25</p>
             <div style="display: flex; justify-content: center; gap: 16px; margin-top: 20px; flex-wrap: wrap;">
                 <span style="background: #2d2d2d; color: #a8a8a3; padding: 6px 12px; border-radius: 6px; font-size: 0.8em; border: 1px solid #5c5c58;">Slider: Navigate slices</span>
                 <span style="background: #2d2d2d; color: #a8a8a3; padding: 6px 12px; border-radius: 6px; font-size: 0.8em; border: 1px solid #5c5c58;">Threshold: Adjust sensitivity</span>
-                <span style="background: #2d2d2d; color: #a8a8a3; padding: 6px 12px; border-radius: 6px; font-size: 0.8em; border: 1px solid #5c5c58;">RECIST: Compare timepoints</span>
             </div>
         </div>
         """)
@@ -3091,18 +3073,17 @@ def create_demo():
         # Helper function to process and update visibility
         def process_and_show(case_name, slice_pct, view_mode, confidence_threshold, slice_axis_val):
             if not case_name:
-                return None, None, None, None, "*Select a case and run analysis*", "", gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+                return None, None, None, "*Select a case and run analysis*", "", gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
 
             result = process_case(case_name, slice_pct, view_mode, confidence_threshold, slice_axis=slice_axis_val)
-            # Return results + visibility updates: hide placeholder, show analysis content, show quick stats
-            # result = (main_img, nav_img, metrics_img, ensemble_img, slice_info, report)
-            return result[0], result[1], result[2], result[3], result[4], result[5], gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
+            # result = (main_img, nav_img, metrics_img, slice_info, report)
+            return result[0], result[1], result[2], result[3], result[4], gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
 
         # Event Handlers
         run_btn.click(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         find_btn.click(
@@ -3112,7 +3093,7 @@ def create_demo():
         ).then(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         case_dropdown.change(
@@ -3122,38 +3103,31 @@ def create_demo():
         ).then(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         slice_slider.release(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         view_mode.change(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         confidence_slider.release(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         slice_axis.change(
             fn=process_and_show,
             inputs=[case_dropdown, slice_slider, view_mode, confidence_slider, slice_axis],
-            outputs=[main_image, nav_image, metrics_image, ensemble_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
-        )
-
-        # RECIST comparison handler
-        compare_btn.click(
-            fn=run_longitudinal_comparison,
-            inputs=[baseline_dropdown, followup_dropdown, confidence_slider],
-            outputs=[recist_image, recist_report]
+            outputs=[main_image, nav_image, metrics_image, slice_info, report_output, welcome_placeholder, analysis_content, quick_stats_section]
         )
 
         export_btn.click(
