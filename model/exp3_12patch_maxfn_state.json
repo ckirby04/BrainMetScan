@@ -1,0 +1,37 @@
+{
+  "experiment": "exp3_12patch_maxfn",
+  "patch_size": 12,
+  "epochs": 200,
+  "elapsed_minutes": 6.983635918299357,
+  "best_metrics": {
+    "dice": 0.7937748432159424,
+    "sensitivity": 0.9337080717086792,
+    "specificity": 0.8289831876754761,
+    "precision": 0.6903180480003357,
+    "tiny_dice": 0.8894347228173707,
+    "small_dice": 0.977084790193192,
+    "medium_dice": 0.0,
+    "large_dice": 0.0,
+    "lesion_sensitivity": 0.9722221952160502,
+    "lesion_precision": 0.9714285436734702,
+    "lesion_f1": 0.9718247074091038,
+    "n_true_lesions": 36,
+    "n_detected": 35
+  },
+  "final_metrics": {
+    "dice": 0.7935505509376526,
+    "sensitivity": 0.9307138919830322,
+    "specificity": 0.8305702805519104,
+    "precision": 0.6916230916976929,
+    "tiny_dice": 0.9243472829955096,
+    "small_dice": 0.974942176434747,
+    "medium_dice": 0.0,
+    "large_dice": 0.0,
+    "lesion_sensitivity": 0.999999972222223,
+    "lesion_precision": 0.9142856881632662,
+    "lesion_f1": 0.9552233546697004,
+    "n_true_lesions": 36,
+    "n_detected": 36
+  },
+  "timestamp": "2026-01-29T23:51:05.854795"
+}
