@@ -71,9 +71,10 @@ chromadb/
 # Zip files
 *.zip
 
-# Training state markers and caches
-model/training_states/
-model/stacking_cache*/
+# Model directory (checkpoints, caches, large files)
+model/
+nnUNet/
+results/
 
 # Misc
 nul

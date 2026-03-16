@@ -1,0 +1,92 @@
+# Configuration for Tiny Lesion Detection - Ultra-Ultra Small Patches
+# Strategy: 16^3 patches on 256^3 images for maximum tiny lesion visibility
+
+# Data - Use preprocessed 256³ data for speed (run scripts/preprocess_256.py first)
+data_dir: "data/preprocessed_256/train"
+test_dir: "data/preprocessed_256/test"
+output_dir: "model"
+model_name: "tiny_lesion_16patch"
+
+# Model architecture - more channels to compensate for minimal context
+model_type: "lightweight"
+base_channels: 48  # Even more channels for very small patches
+depth: 3
+dropout: 0.2  # More regularization for small patches
+use_attention: true
+use_residual: true
+
+# Training - 16x16x16 patches on 256^3 volumes (high-res for tiny lesions)
+patch_size: [16, 16, 16]
+target_size: null  # Data already preprocessed to 256³, skip resize
+batch_size: 32  # Can use large batch with tiny patches
+epochs: 150
+lr: 0.001
+
+# Loss function - Maximum focus on tiny lesions
+loss_type: "small_lesion"
+small_lesion_threshold: 500
+small_lesion_weight: 30.0  # Very aggressive
+
+# Tversky parameters - extreme recall focus
+tversky_alpha: 0.1   # Accept many false positives
+tversky_beta: 0.9    # Heavily penalize missed lesions
+focal_alpha: 0.9
+focal_gamma: 4.0
+
+# Sampling strategy
+sampling_strategy: "difficulty"
+difficulty_multiplier: 25.0
+oversample_small_lesions: true
+foreground_ratio: 0.99  # Almost always sample from lesion regions
+
+# Learning rate schedule
+scheduler: "cosine"
+warmup_epochs: 10
+
+# Augmentation - very minimal
+use_augmentation: true
+augmentation_prob: 0.2  # Very low
+rotation_range: 3  # Minimal rotation
+scale_range: [0.99, 1.01]  # Almost no scaling
+elastic_deformation: false
+
+# Regularization
+gradient_clip: 1.0
+weight_decay: 0.0001
+early_stopping: true
+patience: 35
+
+# Validation
+val_split: 0.15
+num_workers: 4  # More workers OK with preprocessed data (no resize overhead)
+save_freq: 10
+
+# Inference settings
+eval_patch_size: [16, 16, 16]
+eval_overlap: 0.9  # Very high overlap needed for tiny patches
+eval_threshold: 0.2  # Low threshold
+
+# RATIONALE:
+# 1. Patch size 16^3:
+#    - A 500-voxel lesion (~8^3) occupies 8/16 = 50% of one dimension
+#    - Lesion is HALF the patch size - extremely prominent
+#    - Maximum visibility for tiny structures
+#
+# 2. Preprocessed 256^3 data:
+#    - 2x resolution preserves tiny lesion voxel detail
+#    - A lesion that was 4^3 at 128 becomes 8^3 at 256 (8x more voxels)
+#    - Pre-resized data avoids memory spikes during training
+#    - Run scripts/preprocess_256.py first!
+#
+# 3. Batch size 32:
+#    - 16^3 = 4,096 voxels per patch
+#    - 24^3 = 13,824 voxels (3.4x more)
+#    - Can fit many more patches in memory
+#
+# 4. 48 base channels:
+#    - Compensates for minimal spatial context
+#    - More feature capacity in each small patch
+#
+# 5. 90% inference overlap:
+#    - Critical for tiny patches
+#    - Every voxel seen by many overlapping predictions

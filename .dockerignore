@@ -1,0 +1,40 @@
+# Training data
+data/preprocessed_256/
+data/test/
+data/Context/
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+
+# Notebooks
+notebooks/
+
+# Outputs
+outputs/
+logs/
+analysis/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+
+# Docs
+docs/
+*.md
+
+# Tests (not needed in production image)
+tests/
+
+# Claude
+.claude/

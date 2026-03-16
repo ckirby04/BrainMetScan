@@ -1,0 +1,318 @@
+# BrainMetScan Repository Improvement Instructions
+
+This document describes all changes needed to make the BrainMetScan repository
+presentable for external collaborators, lab PIs, and potential PhD applications.
+Work through each section in order. Many of these can be done in a single Claude
+Code session.
+
+---
+
+## 1. README.md — Rewrite for External Audience
+
+The current README is written as internal lab notes. Rewrite it so a PI who has
+never seen the project immediately understands the clinical motivation, what was
+built, and what you're looking for.
+
+**Replace the current README.md with the following structure:**
+
+```
+# BrainMetScan
+
+> Automated brain metastasis segmentation from multi-modal MRI using a
+> multi-scale 3D U-Net ensemble trained on publicly available data.
+
+## Clinical Motivation
+- Brain metastases occur in 20-40% of cancer patients
+- Accurate, fast segmentation is critical for stereotactic radiosurgery planning
+- Small lesions (<10mm) are routinely missed by radiologists under time pressure
+- This project focuses specifically on improving detection of sub-centimeter lesions
+
+## What This Is
+A custom nnU-Net ensemble pipeline trained on the Stanford BrainMetShare dataset
+(566 labeled cases) that achieves:
+
+| Metric                  | Score  |
+|-------------------------|--------|
+| Voxel Sensitivity       | 95.6%  |
+| Lesion Detection Rate   | 92.2% (47/51) |
+| Lesion F1               | 70.1%  |
+| Tiny Lesion Dice        | 85–92% |
+
+Trained entirely on a consumer GPU. No institutional compute required.
+
+## Architecture
+- **Base**: LightweightUNet3D with attention gates and residual connections
+- **Input**: 4-channel MRI (T1-pre, T1-Gd, FLAIR, T2)
+- **Ensemble**: 4 models trained at patch sizes 8, 12, 24, 36
+- **Fusion**: Union (MAX probability) — maximizes sensitivity for clinical use
+- **Loss**: Tversky (α=0.1, β=0.9) + Focal Dice — 9x penalty for missed lesions
+
+## Key Results vs Baseline
+
+| Metric            | Baseline | This Work | Improvement |
+|-------------------|----------|-----------|-------------|
+| Overall Dice      | 67.2%    | 73.1%     | +5.9%       |
+| Tiny Lesion Dice  | 18.5%    | 85–92%    | +66–74%     |
+| Lesion Sensitivity| 71.9%    | 92.2%     | +20.3%      |
+| Voxel Sensitivity | ~65%     | 95.6%     | +30.6%      |
+
+## Limitations & Open Questions
+- Trained and validated on a single institution dataset (Stanford BrainMetShare)
+- Generalizability to other scanners, field strengths, and protocols is unknown
+- False positive rate needs reduction for clinical deployment
+- **Seeking multi-site MRI data for cross-validation and retraining**
+
+## Installation
+[installation steps here — see Section 3 below]
+
+## Usage
+[inference example here — see Section 3 below]
+
+## Dataset
+Stanford BrainMetShare — publicly available at [link].
+Data not included in this repo. See `data/README.md` for setup instructions.
+
+## License
+MIT
+
+## Contact
+Clark Kirby — [your email] — University of Arkansas
+```
+
+**Remove from README:**
+- The `1.2/` file tree block (confusing to external readers, implied by repo structure)
+- The "FDA 510(k) Preparation" next step (premature, reads as overclaiming)
+- The citation block at the bottom (replace with proper BibTeX or remove entirely)
+- Placeholder `[Your license here]` and `[Your contact info here]` — fill these in
+
+---
+
+## 2. Fill In All Placeholder Fields
+
+Search the entire repo for the following strings and replace with real content:
+
+- `[Your license here]` → Add an actual LICENSE file (MIT recommended). Add
+  `MIT License` to README.
+- `[Your contact info here]` → Add your email and institution
+- `[link]` or any unfilled dataset links → Add the actual BrainMetShare URL:
+  https://stanfordaimi.azurewebsites.net/datasets/
+
+---
+
+## 3. Add a Proper Installation + Inference Section to README
+
+The Quick Start currently shows a partial code snippet with a comment directing
+the reader elsewhere. Replace it with a complete, runnable example.
+
+```python
+## Installation
+
+git clone https://github.com/ckirby04/BrainMetScan
+cd BrainMetScan
+pip install -r requirements.txt
+
+## Inference (Smart Ensemble)
+
+python scripts/run_inference.py \
+  --input path/to/patient_dir \
+  --output path/to/output_dir \
+  --threshold 0.6
+```
+
+Create `scripts/run_inference.py` if it doesn't exist yet — a minimal script
+that loads the 4 ensemble models, runs inference on a single patient directory,
+and saves a NIfTI segmentation mask. This is the single most important thing a
+collaborating lab will try to run.
+
+---
+
+## 4. Add `data/README.md`
+
+Create a new file at `data/README.md` explaining:
+- That data is NOT included in the repo (and why — patient data, licensing)
+- Where to download BrainMetShare
+- Expected directory structure after download:
+
+```
+data/
+├── raw/
+│   ├── patient_001/
+│   │   ├── t1.nii.gz
+│   │   ├── t1ce.nii.gz
+│   │   ├── flair.nii.gz
+│   │   ├── t2.nii.gz
+│   │   └── seg.nii.gz
+│   └── ...
+└── processed/   ← generated by preprocessing script
+```
+
+- How to run preprocessing: `python scripts/preprocess.py --input data/raw --output data/processed`
+
+---
+
+## 5. Add Results Figures to README
+
+Add at least one visual to the README. Options in order of priority:
+
+1. **Segmentation overlay** — a side-by-side of T1-Gd MRI slice and predicted
+   segmentation mask on a real case from the validation set. Even one good
+   example is worth more than any table. Save as `docs/figures/example_seg.png`
+   and embed in README.
+2. **Sensitivity vs FP tradeoff curve** (FROC curve) if you have it
+3. **Lesion size breakdown bar chart** — Dice by lesion size bucket
+   (<5mm, 5–10mm, >10mm)
+
+To embed in README:
+```markdown
+![Example segmentation](docs/figures/example_seg.png)
+*Left: T1-Gd MRI. Right: Predicted segmentation (green) vs ground truth (red).*
+```
+
+---
+
+## 6. Clean Up `.gitignore`
+
+Make sure the following are in `.gitignore` and NOT committed to the repo:
+
+```
+# Model weights (too large, use releases or external hosting)
+model/*.pth
+model/*.pt
+
+# Data
+data/raw/
+data/processed/
+
+# Outputs
+outputs/
+*.png          ← confusion matrix images, etc.
+*.json         ← results JSONs
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+venv/
+env/
+```
+
+If any `.pth` files are already committed, remove them from git history:
+```bash
+git rm --cached model/*.pth
+git commit -m "Remove model weights from tracking"
+```
+
+---
+
+## 7. Add Model Weight Hosting
+
+Model weights should NOT be in the git repo. Instead:
+
+1. Create a GitHub Release (v1.2) and attach the `.pth` files there, OR
+2. Upload to HuggingFace Hub (free, standard for medical imaging work), OR
+3. Add a `scripts/download_weights.py` that pulls from a shared Google Drive link
+
+Update the README and inference script to pull weights automatically if not
+present locally.
+
+---
+
+## 8. Notebooks — Clean and Document
+
+Check all notebooks in `notebooks/`. For each one:
+- Clear all outputs before committing (`Kernel → Restart & Clear Output`)
+- Add a markdown cell at the top describing what the notebook does
+- Rename any that have generic names like `Untitled.ipynb`
+
+Suggested names if they don't already exist:
+- `notebooks/01_data_exploration.ipynb`
+- `notebooks/02_training_analysis.ipynb`
+- `notebooks/03_ensemble_evaluation.ipynb`
+
+---
+
+## 9. Add Type Hints and Docstrings to Core Modules
+
+At minimum, add docstrings to:
+- `src/segmentation/unet.py` — describe the architecture, input/output shapes
+- `src/segmentation/losses.py` — describe each loss function and its parameters
+- `src/segmentation/dataset.py` — describe expected data format
+
+Example format:
+```python
+class LightweightUNet3D(nn.Module):
+    """
+    Lightweight 3D U-Net with attention gates and residual connections.
+
+    Args:
+        in_channels (int): Number of input MRI modalities (default: 4)
+        out_channels (int): Number of output classes (default: 1 for binary seg)
+        use_attention (bool): Enable attention gates in decoder
+        use_residual (bool): Enable residual connections in encoder blocks
+
+    Input shape:  (B, 4, D, H, W)
+    Output shape: (B, 1, D, H, W) — raw logits before sigmoid
+    """
+```
+
+---
+
+## 10. Add a `configs/` README
+
+The `configs/` directory contains YAML training configs. Add a `configs/README.md`
+that explains what each config file does and what the key hyperparameters mean.
+This makes the training process reproducible for a collaborator.
+
+---
+
+## 11. Fix the Citation Block
+
+Replace the current citation block:
+```
+Brain Metastasis Segmentation Model v1.2
+Smart Ensemble with Union Fusion
+Performance: 95.6% voxel sensitivity, 92.2% lesion detection at threshold 0.6
+```
+
+With a proper BibTeX placeholder:
+```bibtex
+@software{kirby2025brainmetscan,
+  author = {Kirby, Clark},
+  title  = {BrainMetScan: Multi-Scale Ensemble for Brain Metastasis Segmentation},
+  year   = {2025},
+  url    = {https://github.com/ckirby04/BrainMetScan}
+}
+```
+
+---
+
+## 12. Add a `CONTRIBUTING.md` (Optional but Signals Openness)
+
+A short file that says the project is actively seeking collaboration, especially:
+- Multi-site MRI datasets for external validation
+- Clinical partners interested in treatment planning applications
+- Researchers working on small lesion detection
+
+Include your contact email here too.
+
+---
+
+## Priority Order
+
+If you want to do this in stages before sending any emails, do these first:
+
+1. Fix placeholders (contact info, license) — 10 minutes
+2. Rewrite README intro and limitations section — 30 minutes  
+3. Create `scripts/run_inference.py` — 1 hour
+4. Add one segmentation figure to README — 30 minutes
+5. Clean `.gitignore`, remove `.pth` files, set up releases — 30 minutes
+
+Everything else (docstrings, notebooks, configs README) can come after your
+first outreach round. The goal is: a PI clicks the link, reads the README in
+90 seconds, and has enough to decide if they want to reply.

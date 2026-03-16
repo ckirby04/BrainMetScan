@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brainmetscan"
+version = "1.23.0"
+description = "Brain metastasis segmentation and RAG-based clinical reporting pipeline"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    # Deep Learning & Medical Imaging
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "monai>=1.3.0",
+    "nibabel>=5.0.0",
+    "SimpleITK>=2.3.0",
+
+    # Scientific Computing
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "scikit-learn>=1.3.0",
+    "scikit-image>=0.21.0",
+
+    # Data Processing
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+
+    # RAG & LLM
+    "langchain>=0.1.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "anthropic>=0.75.0",
+    "openai>=1.0.0",
+    "transformers>=4.35.0",
+    "open_clip_torch>=2.23.0",
+    "biopython>=1.83",
+    "rank-bm25>=0.2.2",
+    "langchain-community>=0.0.20",
+    "langchain-text-splitters>=0.0.1",
+    "xmltodict>=0.13.0",
+
+    # Visualization
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "plotly>=5.17.0",
+    "opencv-python>=4.8.0",
+    "Pillow>=10.0.0",
+
+    # Demo
+    "gradio>=4.0.0",
+
+    # API
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "python-multipart>=0.0.6",
+    "requests>=2.31.0",
+
+    # DICOM
+    "pydicom>=2.4.0",
+    "highdicom>=0.22.0",
+
+    # PDF Reports
+    "reportlab>=4.0.0",
+
+    # Utilities
+    "tqdm>=4.65.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.25.0",
+    "ruff>=0.1.0",
+    "jupyter>=1.0.0",
+    "ipywidgets>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

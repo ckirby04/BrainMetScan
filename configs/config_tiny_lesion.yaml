@@ -1,0 +1,90 @@
+# Configuration for Tiny Lesion Detection (<500 voxels)
+# Strategy: Small patches (48^3) for high-resolution detection of tiny metastases
+
+# Data
+data_dir: "../Superset/full/train"
+test_dir: "../Superset/full/test"
+output_dir: "model"
+model_name: "tiny_lesion_48patch"
+
+# Model architecture - optimized for small patches
+model_type: "lightweight"
+base_channels: 24  # Slightly larger for better feature extraction
+depth: 3
+dropout: 0.15  # Slightly more regularization
+use_attention: true  # Attention helps focus on small structures
+use_residual: true
+
+# Training - 48x48x48 patches (better resolution for tiny lesions)
+patch_size: [48, 48, 48]
+target_size: [128, 128, 128]  # Volume resize before patching
+batch_size: 8  # Can use larger batch with smaller patches
+epochs: 100
+lr: 0.001
+
+# Loss function - Aggressive focus on tiny lesions
+loss_type: "small_lesion"
+small_lesion_threshold: 500  # Target: lesions < 500 voxels
+small_lesion_weight: 15.0  # Very aggressive weighting for tiny lesions
+
+# Tversky parameters - favor recall over precision
+tversky_alpha: 0.2  # Low alpha = less penalty for false positives
+tversky_beta: 0.8   # High beta = heavy penalty for false negatives (missing lesions)
+focal_alpha: 0.8
+focal_gamma: 3.0  # Higher gamma = more focus on hard examples
+
+# Sampling strategy - heavily oversample tiny lesions
+sampling_strategy: "difficulty"
+difficulty_multiplier: 15.0  # Very aggressive oversampling
+oversample_small_lesions: true
+foreground_ratio: 0.95  # Almost always sample from lesion regions
+
+# Learning rate schedule
+scheduler: "cosine"
+warmup_epochs: 5
+
+# Augmentation - moderate (don't want to distort tiny structures too much)
+use_augmentation: true
+augmentation_prob: 0.4
+rotation_range: 10  # Less rotation to preserve small structures
+scale_range: [0.95, 1.05]  # Less scaling
+elastic_deformation: false  # Disable - can destroy tiny lesions
+
+# Regularization
+gradient_clip: 1.0
+weight_decay: 0.0001  # Slightly more weight decay
+early_stopping: true
+patience: 25
+
+# Validation
+val_split: 0.15
+num_workers: 4
+save_freq: 10
+
+# Inference settings for small patches
+eval_patch_size: [48, 48, 48]
+eval_overlap: 0.75  # Higher overlap for small patches (better coverage)
+eval_threshold: 0.3  # Lower threshold to catch more tiny lesions
+
+# RATIONALE:
+# 1. Patch size 48^3 (vs 96^3):
+#    - A 500-voxel lesion is ~8x8x8 = 512 voxels
+#    - In 48^3 patch, this is 8/48 = 17% of one dimension
+#    - In 96^3 patch, this is 8/96 = 8% of one dimension
+#    - Smaller patch = lesion occupies larger relative area = easier to detect
+#
+# 2. Aggressive weighting (15x):
+#    - Tiny lesions are ~5% of cases but critical for early detection
+#    - Standard weighting leads to 18% Dice - unacceptable
+#
+# 3. Tversky alpha=0.2, beta=0.8:
+#    - Heavily penalizes missing lesions (false negatives)
+#    - Accepts more false positives (can filter in post-processing)
+#
+# 4. Higher overlap at inference (75%):
+#    - Small patches need more overlap to ensure lesions aren't at edges
+#    - Averaging multiple predictions improves accuracy
+#
+# 5. Attention enabled:
+#    - Helps model focus on small anomalous regions
+#    - Particularly important when lesion is tiny relative to patch

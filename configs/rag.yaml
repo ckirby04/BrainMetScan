@@ -1,0 +1,59 @@
+# RAG Pipeline Configuration
+# Advanced retrieval-augmented generation for brain metastasis analysis
+
+embedding:
+  model_name: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  context_length: 256
+  embedding_dim: 512
+  batch_size: 32
+
+corpus:
+  pubmed_queries:
+    - "brain metastasis MRI segmentation"
+    - "brain metastasis treatment response"
+    - "stereotactic radiosurgery brain metastases"
+    - "immunotherapy brain metastases"
+    - "AI deep learning brain tumor segmentation"
+    - "RECIST brain metastases measurement"
+    - "CNS tumors MRI imaging"
+    - "deep learning medical image analysis"
+  max_per_query: 1500
+  total_target: 8000
+
+  fulltext_journals:
+    - "Neuro-oncology"
+    - "Journal of clinical oncology"
+    - "The Lancet. Oncology"
+    - "Radiology"
+    - "JAMA oncology"
+    - "Nature medicine"
+
+chunking:
+  strategy: "semantic"
+  standard_sections:
+    - "abstract"
+    - "introduction"
+    - "methods"
+    - "results"
+    - "discussion"
+    - "conclusions"
+  max_tokens: 512
+  overlap_tokens: 50
+
+retrieval:
+  dense_weight: 0.7
+  sparse_weight: 0.3
+  rrf_k: 60
+  default_top_k: 10
+
+chromadb:
+  path: "outputs/rag/chromadb_v2"
+  literature_collection: "literature_chunks_v2"
+  knowledge_collection: "medical_knowledge_v2"
+
+report:
+  max_context_chunks: 8
+  max_similar_cases: 5
+  citation_style: "vancouver"
+  claude_model: "claude-sonnet-4-20250514"
+  openai_model: "gpt-4o-mini"
